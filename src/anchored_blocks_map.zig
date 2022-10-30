@@ -59,6 +59,10 @@ pub const AnchoredBlocksMap = struct {
         return best_block;
     }
 
+    pub fn hasAnchoredBlocksForWeakHash(self: Self, weak_hash: WeakHashType) bool {
+        return self.underlying_hash_map.contains(weak_hash);
+    }
+
     fn addAnchoredBlock(self: *Self, anchored_block: AnchoredBlock) !void {
         var blocks: *std.ArrayList(AnchoredBlock) = undefined;
 
