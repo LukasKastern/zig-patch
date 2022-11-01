@@ -8,7 +8,8 @@
             "type": "shell",
             "command": "zig",
             "args": [
-                "build"
+                "build",
+                "-Drelease-safe=true"
             ],
             "group": {
                 "kind": "build",

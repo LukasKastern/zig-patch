@@ -51,4 +51,5 @@ pub fn build(b: *std.build.Builder) void {
         run_test_step.dependOn(&run_test_cmd.step);
     } // <<< TEST - BUILD AND RUN <<<
 
+    exe.addPackagePath("clap", "third_party/zig-clap/clap.zig");
 }

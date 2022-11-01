@@ -3,6 +3,8 @@ const BlockHash = @import("block.zig").BlockHash;
 const BlockSize = @import("block.zig").BlockSize;
 const RollingHash = @import("rolling_hash.zig").RollingHash;
 const ThreadPool = @import("zap/thread_pool_go_based.zig");
+const Getty = @import("getty");
+const WeakHashType = @import("block.zig").WeakHashType;
 
 pub const SignatureFile = struct {
     const Directory = struct {
@@ -222,12 +224,219 @@ pub const SignatureFile = struct {
         }
     }
 
-    pub fn saveSignatureToFile(self: *SignatureFile, target_path: []const u8) !void {
-        _ = self;
-        var file = try std.fs.createFileAbsolute(target_path, .{});
-        defer file.close();
+    const SerializationVersion = 4;
+    const TypeTag = "SignatureFile";
+    const Endian = std.builtin.Endian.Big;
 
-        var buffer: [32]u8 = undefined;
-        _ = try file.write(&buffer);
+    pub fn saveSignature(self: *SignatureFile, writer: anytype) !void {
+        // var file = try std.fs.createFileAbsolute(target_path, .{});
+        // defer file.close();
+
+        // try file.setEndPos(0);
+
+        // const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
+        // var buffered_file_writer: BufferedFileWriter = .{
+        //     .unbuffered_writer = file.writer(),
+        // };
+
+        // var writer = buffered_file_writer.writer();
+
+        try writer.writeInt(usize, TypeTag.len, Endian);
+        try writer.writeAll(TypeTag);
+        try writer.writeInt(usize, SerializationVersion, Endian);
+
+        try writer.writeInt(usize, self.directories.items.len, Endian);
+        for (self.directories.items) |directory| {
+            // Write Length of the path
+            try writer.writeInt(usize, directory.path.len, Endian);
+            try writer.writeAll(directory.path);
+
+            try writer.writeInt(u8, directory.permissions, Endian);
+        }
+
+        try writer.writeInt(usize, self.files.items.len, Endian);
+        for (self.files.items) |signature_file| {
+            // Write Length of the path
+            try writer.writeInt(usize, signature_file.name.len, Endian);
+            try writer.writeAll(signature_file.name);
+
+            try writer.writeInt(usize, signature_file.size, Endian);
+            try writer.writeInt(u8, signature_file.permissions, Endian);
+        }
+
+        try writer.writeInt(usize, self.blocks.items.len, Endian);
+        for (self.blocks.items) |block| {
+            // Write Length of the path
+            try writer.writeInt(WeakHashType, block.weak_hash, Endian);
+            try writer.writeAll(&block.strong_hash);
+        }
+    }
+
+    pub fn loadSignature(reader: anytype, allocator: std.mem.Allocator) !*SignatureFile {
+        var signature_file = try SignatureFile.init(allocator);
+        errdefer signature_file.deinit();
+
+        // var out_file = try std.fs.openFileAbsolute(target_path, .{});
+        // defer out_file.close();
+
+        // const BufferedFileReader = std.io.BufferedReader(1200, std.fs.File.Reader);
+        // var buffered_file_reader: BufferedFileReader = .{
+        //     .unbuffered_reader = out_file.reader(),
+        // };
+        // var reader = buffered_file_reader.reader();
+
+        var read_buffer: [1028]u8 = undefined;
+
+        var type_tag_len = try reader.readInt(usize, Endian);
+
+        try reader.readNoEof(read_buffer[0..type_tag_len]);
+
+        if (!std.mem.eql(u8, TypeTag, read_buffer[0..type_tag_len])) {
+            return error.FileTypeTagMismatch;
+        }
+
+        var version = try reader.readInt(usize, Endian);
+
+        if (version != SerializationVersion) {
+            return error.SerializationVersionMismatch;
+        }
+
+        const num_directories = try reader.readInt(usize, Endian);
+        try signature_file.directories.resize(num_directories);
+
+        for (signature_file.directories.items) |*directory| {
+            const path_length = try reader.readInt(usize, Endian);
+
+            var path_buffer = try signature_file.allocator.alloc(u8, path_length);
+            errdefer signature_file.allocator.free(path_buffer);
+
+            try reader.readNoEof(path_buffer[0..path_length]);
+            directory.path = path_buffer;
+
+            directory.permissions = try reader.readInt(u8, Endian);
+        }
+
+        const num_files = try reader.readInt(usize, Endian);
+        try signature_file.files.resize(num_files);
+
+        for (signature_file.files.items) |*file| {
+            const path_length = try reader.readInt(usize, Endian);
+
+            var path_buffer = try signature_file.allocator.alloc(u8, path_length);
+            errdefer signature_file.allocator.free(path_buffer);
+
+            try reader.readNoEof(path_buffer[0..path_length]);
+            file.name = path_buffer;
+            file.size = try reader.readInt(usize, Endian);
+            file.permissions = try reader.readInt(u8, Endian);
+        }
+
+        const num_blocks = try reader.readInt(usize, Endian);
+        try signature_file.blocks.resize(num_blocks);
+
+        for (signature_file.blocks.items) |*block| {
+            block.weak_hash = try reader.readInt(WeakHashType, Endian);
+            try reader.readNoEof(&block.strong_hash);
+        }
+
+        return signature_file;
     }
 };
+
+test "signature file should be same after serialization/deserialization" {
+    var signature_file = try SignatureFile.init(std.testing.allocator);
+    defer signature_file.deinit();
+
+    var file_name_a = try std.testing.allocator.alloc(u8, "a.data".len);
+    std.mem.copy(u8, file_name_a, "a.data");
+
+    var file_name_b = try std.testing.allocator.alloc(u8, "b.data".len);
+    std.mem.copy(u8, file_name_b, "b.data");
+
+    try signature_file.files.append(.{
+        .name = file_name_a,
+        .size = BlockSize * 2,
+        .permissions = 45,
+    });
+    try signature_file.files.append(.{
+        .name = file_name_b,
+        .size = BlockSize * 4,
+        .permissions = 20,
+    });
+
+    var dir_name_a = try std.testing.allocator.alloc(u8, "directory_a".len);
+    std.mem.copy(u8, dir_name_a, "directory_a");
+
+    var dir_name_b = try std.testing.allocator.alloc(u8, "directory_b".len);
+    std.mem.copy(u8, dir_name_b, "directory_b");
+
+    try signature_file.directories.append(.{
+        .path = dir_name_a,
+        .permissions = 64,
+    });
+    try signature_file.directories.append(.{
+        .path = dir_name_b,
+        .permissions = 5,
+    });
+
+    try signature_file.blocks.append(.{
+        .weak_hash = 8,
+        .strong_hash = [16]u8{ 35, 1, 46, 21, 84, 231, 1, 45, 0, 1, 154, 21, 84, 154, 1, 85 },
+    });
+
+    try signature_file.blocks.append(.{
+        .weak_hash = 8,
+        .strong_hash = [16]u8{ 78, 1, 99, 21, 84, 1, 33, 45, 120, 1, 54, 21, 84, 154, 1, 5 },
+    });
+
+    try signature_file.blocks.append(.{
+        .weak_hash = 8,
+        .strong_hash = [16]u8{ 32, 1, 54, 21, 84, 57, 1, 67, 84, 1, 64, 21, 84, 54, 1, 45 },
+    });
+
+    try signature_file.blocks.append(.{
+        .weak_hash = 8,
+        .strong_hash = [16]u8{ 5, 1, 245, 21, 84, 231, 154, 45, 120, 1, 154, 21, 84, 154, 1, 235 },
+    });
+
+    try signature_file.blocks.append(.{
+        .weak_hash = 8,
+        .strong_hash = [16]u8{ 46, 76, 56, 21, 84, 57, 54, 45, 21, 1, 64, 21, 84, 57, 1, 47 },
+    });
+
+    try signature_file.blocks.append(.{
+        .weak_hash = 8,
+        .strong_hash = [16]u8{ 123, 1, 123, 21, 78, 50, 54, 45, 81, 1, 54, 21, 84, 47, 1, 47 },
+    });
+
+    var buffer: [1200]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+
+    var writer = stream.writer();
+    try signature_file.saveSignature(writer);
+
+    try stream.seekTo(0);
+    var reader = stream.reader();
+
+    var deserialized_signature_file = try SignatureFile.loadSignature(reader, std.testing.allocator);
+    defer deserialized_signature_file.deinit();
+
+    try std.testing.expectEqual(signature_file.directories.items.len, deserialized_signature_file.directories.items.len);
+    try std.testing.expectEqual(signature_file.files.items.len, deserialized_signature_file.files.items.len);
+    try std.testing.expectEqual(signature_file.blocks.items.len, deserialized_signature_file.blocks.items.len);
+
+    for (signature_file.directories.items) |directory, idx| {
+        try std.testing.expectEqual(directory.permissions, deserialized_signature_file.directories.items[idx].permissions);
+        try std.testing.expectEqualSlices(u8, directory.path, deserialized_signature_file.directories.items[idx].path);
+    }
+
+    for (signature_file.files.items) |file, idx| {
+        try std.testing.expectEqual(file.permissions, deserialized_signature_file.files.items[idx].permissions);
+        try std.testing.expectEqualSlices(u8, file.name, deserialized_signature_file.files.items[idx].name);
+    }
+
+    for (signature_file.blocks.items) |block, idx| {
+        try std.testing.expectEqual(block.weak_hash, deserialized_signature_file.blocks.items[idx].weak_hash);
+        try std.testing.expectEqualSlices(u8, &block.strong_hash, &deserialized_signature_file.blocks.items[idx].strong_hash);
+    }
+}

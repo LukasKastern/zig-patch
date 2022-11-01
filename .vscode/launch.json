@@ -9,7 +9,7 @@
       },
       "request": "launch",
       "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": [],
+      "args": ["create", "--folder", "E:/WindowsNoEditor"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",
       "environment": [],

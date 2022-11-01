@@ -6,15 +6,15 @@ const BlockSize = @import("block.zig").BlockSize;
 const RollingHash = @import("rolling_hash.zig").RollingHash;
 const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
 
-pub const MaxDataOperationLength = 1024 * 1024 * 64;
+pub const MaxDataOperationLength = 1024 * 1024 * 4;
 
-const BlockRangeOperation = struct {
+pub const BlockRangeOperation = struct {
     file_index: usize,
     block_index: usize,
     block_span: usize,
 };
 
-const PatchOperation = union(enum) { Invalid: void, BlockRange: BlockRangeOperation, Data: []u8 };
+pub const PatchOperation = union(enum) { Invalid: void, BlockRange: BlockRangeOperation, Data: []u8 };
 
 pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, max_operation_len: usize, allocator: std.mem.Allocator) !std.ArrayList(PatchOperation) {
     const max_operations = @floatToInt(usize, @ceil(@intToFloat(f64, buffer.len) / @intToFloat(f64, max_operation_len)));
@@ -147,4 +147,66 @@ test "Operations for buffer without Reference should rebuild the original buffer
     }
 
     try std.testing.expectEqualSlices(u8, original_buffer, rebuilt_buffer);
+}
+
+const Endian = std.builtin.Endian.Big;
+
+pub fn saveOperations(operations: std.ArrayList(PatchOperation), writer: anytype) !void {
+    try writer.writeInt(usize, operations.items.len, Endian);
+
+    for (operations.items) |operation| {
+        switch (operation) {
+            .Data => |data| {
+                try writer.writeAll(data);
+            },
+            .BlockRange => |range| {
+                try writer.writeInt(usize, range.file_index, Endian);
+                try writer.writeInt(usize, range.block_index, Endian);
+                try writer.writeInt(usize, range.block_span, Endian);
+            },
+            else => return error.UnknownOperationTypeFound,
+        }
+    }
+}
+
+pub fn loadOperations(allocator: std.mem.Allocator, reader: anytype) !std.ArrayList(PatchOperation) {
+    var num_operations = try reader.readInt(usize, Endian);
+
+    var operations = try std.ArrayList(PatchOperation).initCapacity(num_operations, allocator);
+    errdefer operations.deinit();
+
+    var operation_idx: usize = 0;
+    while (operation_idx < num_operations) : (operation_idx += 1) {
+        var operation_type_raw = try reader.readInt(usize, Endian);
+
+        var operation_type = @intToEnum(PatchOperation, operation_type_raw);
+        var operation: PatchOperation = undefined;
+
+        switch (operation_type) {
+            .Data => {
+                var data_len = try reader.readInt(usize, Endian);
+                var data = try allocator.alloc(u8, data_len);
+
+                try reader.readNoEof(data[0..data_len]);
+
+                operation = PatchOperation{
+                    .Data = data,
+                };
+            },
+            .BlockRange => {
+                var file_idx = try reader.readInt(usize, Endian);
+                var block_idx = try reader.readInt(usize, Endian);
+                var block_span = try reader.readInt(usize, Endian);
+
+                operation = PatchOperation{
+                    .BlockRange = .{ .file_index = file_idx, .block_index = block_idx, .block_span = block_span },
+                };
+            },
+            else => return error.UnknownOperationTypeFound,
+        }
+
+        operations.appendAssumeCapacity(operation);
+    }
+
+    return operations;
 }

@@ -48,7 +48,7 @@ pub const AnchoredBlocksMap = struct {
 
         if (self.underlying_hash_map.get(hash.weak_hash)) |blocks| {
             for (blocks.items) |block| {
-                const strong_hash_matches = std.mem.eql(u32, &block.hash.strong_hash, &hash.strong_hash);
+                const strong_hash_matches = std.mem.eql(u8, &block.hash.strong_hash, &hash.strong_hash);
 
                 if (strong_hash_matches and (best_block == null or block.file_index == preferred_file_idx)) {
                     best_block = block;
@@ -85,7 +85,7 @@ pub const AnchoredBlocksMap = struct {
         for (signature_file.blocks.items) |block| {
             var file = signature_file.files.items[file_index];
 
-            if (file.size - byte_offset <= 0) {
+            if (@intCast(isize, file.size) - byte_offset <= 0) {
                 byte_offset = 0;
                 block_index = 0;
                 file_index += 1;
@@ -97,7 +97,7 @@ pub const AnchoredBlocksMap = struct {
             var anchored_block: AnchoredBlock = .{
                 .file_index = file_index,
                 .block_index = block_index,
-                .short_size = @intCast(usize, BlockSize - std.math.min(BlockSize, file.size - byte_offset)),
+                .short_size = @intCast(usize, BlockSize - std.math.min(BlockSize, @intCast(usize, file.size - @intCast(usize, byte_offset)))),
                 .hash = block
             };
             // zig fmt: on
@@ -114,13 +114,19 @@ test "Simple signature file should be anchored" {
     var signature_file = try SignatureFile.init(std.testing.allocator);
     defer signature_file.deinit();
 
+    var file_name_a = try std.testing.allocator.alloc(u8, "a.data".len);
+    std.mem.copy(u8, file_name_a, "a.data");
+
+    var file_name_b = try std.testing.allocator.alloc(u8, "b.data".len);
+    std.mem.copy(u8, file_name_b, "b.data");
+
     try signature_file.files.append(.{
-        .name = "a.data",
+        .name = file_name_a,
         .size = BlockSize * 2,
         .permissions = 0,
     });
     try signature_file.files.append(.{
-        .name = "b.data",
+        .name = file_name_b,
         .size = BlockSize * 2,
         .permissions = 0,
     });
@@ -128,19 +134,19 @@ test "Simple signature file should be anchored" {
     var hashes: [4]BlockHash = undefined;
     hashes[0] = .{
         .weak_hash = 8,
-        .strong_hash = [8]u32{ 5, 1, 564, 21, 84, 547, 45612, 45 },
+        .strong_hash = [16]u8{ 5, 1, 245, 21, 84, 231, 154, 45, 120, 1, 154, 21, 84, 154, 1, 235 },
     };
     hashes[1] = .{
         .weak_hash = 16,
-        .strong_hash = [8]u32{ 123123, 1, 123, 21, 78570, 547, 564, 456123 },
+        .strong_hash = [16]u8{ 123, 1, 123, 21, 78, 50, 54, 45, 81, 1, 54, 21, 84, 47, 1, 47 },
     };
     hashes[2] = .{
         .weak_hash = 20,
-        .strong_hash = [8]u32{ 456, 786, 56, 21, 84, 547, 564, 45 },
+        .strong_hash = [16]u8{ 46, 76, 56, 21, 84, 57, 54, 45, 21, 1, 64, 21, 84, 57, 1, 47 },
     };
     hashes[3] = .{
         .weak_hash = 8,
-        .strong_hash = [8]u32{ 846321, 1, 564, 21, 84, 547, 1, 4567 },
+        .strong_hash = [16]u8{ 32, 1, 54, 21, 84, 57, 1, 67, 84, 1, 64, 21, 84, 54, 1, 45 },
     };
 
     try signature_file.blocks.appendSlice(hashes[0..]);
@@ -151,24 +157,32 @@ test "Simple signature file should be anchored" {
     for (hashes) |hash| {
         if (anchored_hash_map.getAnchoredBlock(hash, 0)) |block| {
             try std.testing.expectEqual(hash.weak_hash, block.hash.weak_hash);
-            try std.testing.expectEqualSlices(u32, &hash.strong_hash, &block.hash.strong_hash);
+            try std.testing.expectEqualSlices(u8, &hash.strong_hash, &block.hash.strong_hash);
         } else {
             try std.testing.expect(false);
         }
     }
+
+    std.debug.print("lel", .{});
 }
 
 test "Blocks with same strong hash should be picked based on the preferred file" {
     var signature_file = try SignatureFile.init(std.testing.allocator);
     defer signature_file.deinit();
 
+    var file_name_a = try std.testing.allocator.alloc(u8, "a.data".len);
+    std.mem.copy(u8, file_name_a, "a.data");
+
+    var file_name_b = try std.testing.allocator.alloc(u8, "b.data".len);
+    std.mem.copy(u8, file_name_b, "b.data");
+
     try signature_file.files.append(.{
-        .name = "a.data",
+        .name = file_name_a,
         .size = BlockSize * 2,
         .permissions = 0,
     });
     try signature_file.files.append(.{
-        .name = "b.data",
+        .name = file_name_b,
         .size = BlockSize * 2,
         .permissions = 0,
     });
@@ -176,11 +190,11 @@ test "Blocks with same strong hash should be picked based on the preferred file"
     var hashes: [4]BlockHash = undefined;
     hashes[0] = .{
         .weak_hash = 8,
-        .strong_hash = [8]u32{ 5, 1, 564, 21, 84, 547, 45612, 45 },
+        .strong_hash = [16]u8{ 5, 1, 54, 21, 84, 57, 42, 45, 81, 1, 56, 21, 84, 57, 1, 67 },
     };
     hashes[1] = .{
         .weak_hash = 16,
-        .strong_hash = [8]u32{ 123123, 1, 123, 21, 78570, 547, 564, 456123 },
+        .strong_hash = [16]u8{ 84, 1, 56, 21, 84, 57, 1, 46, 21, 1, 64, 21, 84, 54, 1, 45 },
     };
 
     hashes[2] = hashes[0];
@@ -195,7 +209,7 @@ test "Blocks with same strong hash should be picked based on the preferred file"
         var hash = hashes[0];
         if (anchored_hash_map.getAnchoredBlock(hash, 0)) |block| {
             try std.testing.expectEqual(hash.weak_hash, block.hash.weak_hash);
-            try std.testing.expectEqualSlices(u32, &hash.strong_hash, &block.hash.strong_hash);
+            try std.testing.expectEqualSlices(u8, &hash.strong_hash, &block.hash.strong_hash);
             try std.testing.expectEqual(block.file_index, 0);
         } else {
             try std.testing.expect(false);
@@ -207,7 +221,7 @@ test "Blocks with same strong hash should be picked based on the preferred file"
         var hash = hashes[0];
         if (anchored_hash_map.getAnchoredBlock(hash, 1)) |block| {
             try std.testing.expectEqual(hash.weak_hash, block.hash.weak_hash);
-            try std.testing.expectEqualSlices(u32, &hash.strong_hash, &block.hash.strong_hash);
+            try std.testing.expectEqualSlices(u8, &hash.strong_hash, &block.hash.strong_hash);
             try std.testing.expectEqual(block.file_index, 1);
         } else {
             try std.testing.expect(false);
