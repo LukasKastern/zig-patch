@@ -9,6 +9,8 @@ const time = std.time;
 const BlockPatching = @import("block_patching.zig");
 const ThreadPool = @import("zap/thread_pool_go_based.zig");
 const PatchGeneration = @import("patch_generation.zig");
+const PatchHeader = @import("patch_header.zig").PatchHeader;
+const ApplyPatch = @import("apply_patch.zig");
 
 const clap = @import("clap");
 
@@ -47,13 +49,56 @@ const CommandLineCommand = enum {
     help,
 };
 
-fn apply() void {}
+fn findPatchStagingDir() !std.fs.Dir {
+    const MaxAttempts = 50;
+
+    var dir = std.fs.cwd();
+
+    var attempt: usize = 0;
+
+    var print_buffer: [128]u8 = undefined;
+
+    while (attempt < MaxAttempts) : (attempt += 1) {
+        var path_str = try std.fmt.bufPrint(&print_buffer, "PatchTemp_{}", .{attempt});
+
+        dir.makeDir(path_str) catch |make_err| {
+            switch (make_err) {
+                error.PathAlreadyExists => {
+                    // If the path already exists we try to delete it first erasing all file previously stored in it.
+                    dir.deleteTree(path_str) catch |delete_err| {
+                        switch (delete_err) {
+                            else => {
+                                continue;
+                            },
+                        }
+                    };
+
+                    // And then recreate it.
+                    dir.makeDir(path_str) catch |err| {
+                        switch (err) {
+                            else => {
+                                continue;
+                            },
+                        }
+                    };
+                },
+                else => {
+                    continue;
+                },
+            }
+        };
+
+        return dir.openDir(path_str, .{});
+    }
+
+    return error.NoSuitableStagingPathFound;
+}
 
 fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
     const summary = "Creates a patch from an existing directory.";
 
     const params = comptime clap.parseParamsComptime(
-        \\-h, --help                     Display this help message
+        \\-h, --help                     Display this help message.
         \\-f, --folder <str>             Name of the folder to create the diff from.
         \\-p, --previous_patch <str>     Name of the previous patch from which the diff will be created.
         \\
@@ -123,26 +168,153 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         std.log.info("Loaded Previous Signature in {d:2}ms", .{(@intToFloat(f64, post_signature_load_time) - @intToFloat(f64, start_sample)) / 1000000});
     }
 
-    var new_signature_file = try SignatureFile.init(allocator);
-    defer new_signature_file.deinit();
+    var staging_patch_path_buffer: [512]u8 = undefined;
+    var staging_dir_path: []u8 = undefined;
 
-    std.log.info("Generating Signature from {s}...", .{folder.?});
+    {
+        var staging_dir = try findPatchStagingDir();
+        defer staging_dir.close();
 
-    var generate_signature_start_sample = timer.read();
-    try new_signature_file.generateFromFolder(folder.?, thread_pool);
-    var generate_signature_finish_sample = timer.read();
+        var new_signature_file = try SignatureFile.init(allocator);
+        defer new_signature_file.deinit();
 
-    std.log.info("Generated Signature in {d:2}ms", .{(@intToFloat(f64, generate_signature_finish_sample) - @intToFloat(f64, generate_signature_start_sample)) / 1000000});
+        std.log.info("Generating Signature from {s}...", .{folder.?});
 
-    std.log.info("Creating Patch...", .{});
+        var generate_signature_start_sample = timer.read();
+        try new_signature_file.generateFromFolder(folder.?, thread_pool);
+        var generate_signature_finish_sample = timer.read();
 
-    const staging_dir_path = "E:/Personal/wharf-zig/wharf-zig/zig-out/bin/generation_staging_folder_5646515674";
+        std.log.info("Generated Signature in {d:2}ms", .{(@intToFloat(f64, generate_signature_finish_sample) - @intToFloat(f64, generate_signature_start_sample)) / 1000000});
 
-    var create_patch_start_sample = timer.read();
-    try PatchGeneration.createPatch(thread_pool, new_signature_file, prev_signature_file.?, allocator, .{ .staging_dir = std.mem.span(staging_dir_path) });
-    var create_patch_finish_sample = timer.read();
+        std.log.info("Creating Patch...", .{});
 
-    std.log.info("Created Patch in {d:2}ms", .{(@intToFloat(f64, create_patch_finish_sample) - @intToFloat(f64, create_patch_start_sample)) / 1000000});
+        var create_patch_start_sample = timer.read();
+        try PatchGeneration.createPatch(thread_pool, new_signature_file, prev_signature_file.?, allocator, .{ .build_dir = open_dir, .staging_dir = staging_dir });
+        var create_patch_finish_sample = timer.read();
+
+        std.log.info("Created Patch in {d:2}ms", .{(@intToFloat(f64, create_patch_finish_sample) - @intToFloat(f64, create_patch_start_sample)) / 1000000});
+
+        staging_dir_path = try staging_dir.realpath("", &staging_patch_path_buffer);
+
+        var src_patch_path_buffer: [512]u8 = undefined;
+        var src_patch_path = try std.fmt.bufPrint(&src_patch_path_buffer, "{s}/Patch.pwd", .{staging_dir_path});
+
+        var dst_patch_path_buffer: [512]u8 = undefined;
+        var dst_patch_path = try std.fmt.bufPrint(&dst_patch_path_buffer, "{s}/../Patch.pwd", .{staging_dir_path});
+
+        try std.os.rename(src_patch_path, dst_patch_path);
+    }
+
+    try std.fs.deleteTreeAbsolute(staging_dir_path);
+    std.log.info("The patch was generated successfully", .{});
+}
+
+fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
+    const summary = "Applies a patch previously generated via create.";
+
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help                     Display this help message.
+        \\-p, --patch <str>              Path to the patch that should be applied.
+        \\-s, --source_folder <str>      Path of the previous build that the patch will be applied to.
+        \\-t, --target_folder <str>      Path to the folder where the patched build will be stored.
+    );
+
+    var diag: clap.Diagnostic = undefined;
+    var parsed_args = clap.parseEx(clap.Help, &params, clap.parsers.default, args_it, .{
+        .allocator = allocator,
+        .diagnostic = &diag,
+    }) catch |err| {
+        // Report any useful error and exit
+        diag.report(std.io.getStdErr().writer(), err) catch {};
+        return err;
+    };
+
+    if (parsed_args.args.help) {
+        std.debug.print("{s}\n\n", .{summary});
+        clap.help(std.io.getStdErr().writer(), clap.Help, &params, .{}) catch {};
+        std.debug.print("\n", .{});
+        std.os.exit(0);
+        return;
+    }
+
+    if (parsed_args.args.patch == null) {
+        std.log.err("Please pass a patch file generated thorugh create via the --patch <str> param", .{});
+        std.os.exit(0);
+        return;
+    }
+
+    var patch_file = std.fs.openFileAbsolute(parsed_args.args.patch.?, .{}) catch |e| {
+        switch (e) {
+            else => {
+                std.log.err("Failed to open patch file, error => {}", .{e});
+                return;
+            },
+        }
+    };
+
+    defer patch_file.close();
+
+    var patch_file_reader = patch_file.reader();
+
+    var patch = PatchHeader.loadPatchHeader(allocator, patch_file_reader) catch |e| {
+        switch (e) {
+            else => {
+                std.log.err("Failed to deserialize patch file, error => {}", .{e});
+                return;
+            },
+        }
+    };
+
+    defer patch.deinit();
+    defer patch.new.deinit();
+    defer patch.old.deinit();
+
+    var validate_source_folder = patch.old.blocks.items.len > 0 or patch.old.directories.items.len > 0 or patch.old.files.items.len > 0;
+
+    if (validate_source_folder) {
+        if (parsed_args.args.source_folder == null) {
+            std.log.err("No --source_folder <str> passed to apply. But the specified patch requires a reference folder.", .{});
+            return;
+        }
+
+        var source_folder = std.fs.openDirAbsolute(parsed_args.args.source_folder.?, .{}) catch |e| {
+            switch (e) {
+                else => {
+                    std.log.err("Failed to open soource folder, error => {}", .{e});
+                    return;
+                },
+            }
+        };
+        defer source_folder.close();
+
+        if (!patch.old.validateFolderMatchesSignature(source_folder)) {
+            std.log.err("Source folder doesn't match reference that the patch was generated from", .{});
+            return;
+        }
+    }
+
+    if (parsed_args.args.target_folder == null) {
+        std.log.err("No --target_folder <str> passed to apply. Please specify it to tell wharf-zig where to place the build.", .{});
+        return;
+    }
+
+    std.fs.deleteDirAbsolute(parsed_args.args.target_folder.?) catch |e| {
+        switch (e) {
+            error.DirNotEmpty => {
+                std.log.err("Cannot use specified target folder since it's not empty.", .{});
+                return;
+            },
+            else => {},
+        }
+    };
+
+    try std.fs.makeDirAbsolute(parsed_args.args.target_folder.?);
+    var target_dir = try std.fs.openDirAbsolute(parsed_args.args.target_folder.?, .{});
+    defer target_dir.close();
+
+    try ApplyPatch.createFileStructure(target_dir, patch);
+
+    _ = thread_pool;
 }
 
 pub fn main() !void {
@@ -168,31 +340,12 @@ pub fn main() !void {
             try create(&args_it, &thread_pool, allocator);
         },
         .apply => {
-            // apply();
+            try apply(&args_it, &thread_pool, allocator);
         },
         .help => {
             show_main_help();
         },
     }
-
-    // var timer = try time.Timer.start();
-
-    // var file = try std.fs.openFileAbsolute("E:/JourneeDevelopment/WindowsNoEditor/Journee_Unreal/Binaries/Win64/Journee_Unreal.pdb", .{});
-    // defer file.close();
-
-    // var signature_file = try SignatureFile.init(allocator);
-    // defer signature_file.deinit();
-    // // var before_read = timer.read();
-    // // try signature_file.generateFromFolder("E:/JourneeDevelopment/WindowsNoEditor", &thread_pool);
-    // var after_read = timer.read();
-    // // std.log.info("bytes in {d:2}ms", .{(@intToFloat(f64, after_read) - @intToFloat(f64, before_read)) / 1000000});
-    // // _ = timer;
-    // // try signature_file.saveSignatureToFile("E:/Personal/wharf-zig/wharf-zig/zig-out/bin/generation_staging_folder_5646515674/Journee_Unreal.pwr.sig");
-    // var sign = try SignatureFile.loadSignatureFromFile("E:/Personal/wharf-zig/wharf-zig/zig-out/bin/generation_staging_folder_5646515674/Journee_Unreal.pwr.sig", allocator);
-    // defer sign.deinit();
-
-    // var after_signature = timer.read();
-    // std.log.info("Wrote signature file in {d:2}ms", .{(@intToFloat(f64, after_signature) - @intToFloat(f64, after_read)) / 1000000});
 
     var shutdown_task_data = ShutdownTaskData{
         .task = ThreadPool.Task{ .callback = shutdownThreadpool },
@@ -201,37 +354,6 @@ pub fn main() !void {
 
     thread_pool.schedule(ThreadPool.Batch.from(&shutdown_task_data.task));
     defer ThreadPool.deinit(&thread_pool);
-
-    // // Generate patch operations for all files
-
-    // // var end_pos = try file.getEndPos();
-    // // var buffer = try allocator.alloc(u8, end_pos / 2);
-    // // var out = try file.read(buffer);
-    // // defer allocator.free(buffer);
-
-    // // // var signature_file = try SignatureFile.init(allocator);
-    // // // var block_map = try AnchoredBlocksMap.init(signature_file.*, allocator);
-
-    // // // var operation = try BlockPatching.generateOperationsForBuffer(buffer, block_map.*, BlockPatching.MaxDataOperationLength, allocator);
-
-    // // var created_file = try std.fs.createFileAbsolute("E:/Personal/wharf-zig/wharf-zig/zig-out/bin/generation_staging_folder_5646515674/Journee_Unreal.pdb", .{});
-    // // try created_file.writeAll(buffer);
-
-    // // std.log.info("Out{} Read {} bytes in {d:2}ms", .{ out, end_pos, (@intToFloat(f64, after_read) - @intToFloat(f64, before_read)) / 1000000 });
-
-    // // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    // std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
-    // // stdout is for the actual output of your application, for example if you
-    // // are implementing gzip, then only the compressed bytes should be sent to
-    // // stdout, not any debugging messages.
-    // const stdout_file = std.io.getStdOut().writer();
-    // var bw = std.io.bufferedWriter(stdout_file);
-    // const stdout = bw.writer();
-
-    // try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-    // try bw.flush(); // don't forget to flush!
 }
 
 test {
@@ -240,6 +362,7 @@ test {
     std.testing.refAllDecls(@import("block_patching.zig"));
     std.testing.refAllDecls(@import("signature_file.zig"));
     std.testing.refAllDecls(@import("patch_generation.zig"));
+    std.testing.refAllDecls(@import("patch_header.zig"));
 }
 
 //

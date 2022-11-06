@@ -4,6 +4,7 @@ const std = @import("std");
 const ThreadPool = @import("zap/thread_pool_go_based.zig");
 const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
 const MaxDataOperationLength = @import("block_patching.zig").MaxDataOperationLength;
+const PatchHeader = @import("patch_header.zig").PatchHeader;
 
 const PatchFileInfo = struct {
     file_idx: usize,
@@ -27,7 +28,8 @@ const DefaultMaxWorkUnitSize = 1024 * 1024 * 25;
 
 const CreatePatchOptions = struct {
     max_work_unit_size: usize = DefaultMaxWorkUnitSize,
-    staging_dir: [:0]const u8,
+    staging_dir: std.fs.Dir,
+    build_dir: std.fs.Dir,
 };
 
 const CreatePatchOperationsOptions = struct {
@@ -99,6 +101,7 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         file_io: PatchFileIO,
         allocator: std.mem.Allocator,
         staging_dir: std.fs.Dir,
+        build_dir: std.fs.Dir,
         signature_file: *SignatureFile,
         max_work_unit_size: usize,
 
@@ -119,7 +122,7 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
             var self = @fieldParentPtr(@This(), "file_io", patch_file_io);
             var file = self.signature_file.files.items[file_info.file_idx];
 
-            var fs_file = std.fs.openFileAbsolute(file.name, .{}) catch return error.ReadPatchError;
+            var fs_file = self.build_dir.openFile(file.name, .{}) catch return error.ReadPatchError;
             defer fs_file.close();
 
             fs_file.seekTo(file_info.file_part_idx * self.max_work_unit_size) catch return error.ReadPatchError;
@@ -128,9 +131,7 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         }
     };
 
-    try std.fs.makeDirAbsolute(options.staging_dir);
-    var staging_folder = try std.fs.openDirAbsolute(options.staging_dir, .{});
-    defer staging_folder.close();
+    var staging_folder = options.staging_dir;
 
     // zig fmt: off
     var staging_folder_io: PerPatchPartStagingFolderIO = .{ 
@@ -140,6 +141,7 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
             .write_patch_file = &PerPatchPartStagingFolderIO.write,
             .read_patch_file = &PerPatchPartStagingFolderIO.read,
         }, 
+        .build_dir = options.build_dir,
         .staging_dir = staging_folder,
         .max_work_unit_size = options.max_work_unit_size,
     };
@@ -159,29 +161,67 @@ fn numPatchFilesNeeded(signature: *SignatureFile, work_unit_size: usize) usize {
     return num_patch_files;
 }
 
+fn numRealFilesInPatch(signature: *SignatureFile) usize {
+    var num_patch_files: usize = 0;
+
+    for (signature.files.items) |file| {
+        if (file.size > 0) {
+            num_patch_files += 1;
+        }
+    }
+
+    return num_patch_files;
+}
+
 pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *SignatureFile, staging_dir: std.fs.Dir, allocator: std.mem.Allocator, options: CreatePatchOptions) !void {
     var num_patch_files: usize = numPatchFilesNeeded(new_signature, options.max_work_unit_size);
 
     var patch = try staging_dir.createFile("Patch.pwd", .{});
     defer patch.close();
 
+    var patch_writer = patch.writer();
+
     var read_buffer = try allocator.alloc(u8, options.max_work_unit_size);
     defer allocator.free(read_buffer);
 
-    _ = old_signature;
+    var patch_file = try PatchHeader.init(new_signature, old_signature, allocator);
+    defer patch_file.deinit();
+
+    var num_files = numRealFilesInPatch(new_signature);
+    try patch_file.sections.resize(num_files);
+
+    try patch.seekTo(0);
+
+    // Write the header once without the actual file data.
+    // The file data will be populated in the loop below.
+    // Once all the data is written we go back to the start of the file and write the proper data.
+    try patch_file.savePatchHeader(patch_writer);
+    var reserved_header_bytes = try patch.getPos();
+
+    var offset_in_file: usize = 0;
 
     var part_idx: usize = 0;
     var file_idx: usize = 0;
+    var file_idx_in_patch: usize = 0;
+
     var patch_file_idx: usize = 0;
     while (patch_file_idx < num_patch_files) : (patch_file_idx += 1) {
-        if (part_idx * options.max_work_unit_size > new_signature.files.items[file_idx].size) {
+        var remaining_file_len = @intCast(isize, new_signature.files.items[file_idx].size) - @intCast(isize, part_idx * options.max_work_unit_size);
+
+        if (remaining_file_len < 0) {
             part_idx = 0;
             file_idx += 1;
 
             while (new_signature.files.items[file_idx].size == 0) {
                 file_idx += 1;
             }
+
+            file_idx_in_patch += 1;
+            remaining_file_len = @intCast(isize, new_signature.files.items[file_idx].size);
         }
+
+        patch_file.sections.items[file_idx_in_patch] = .{ .file_idx = file_idx, .operations_start_pos_in_file = offset_in_file };
+        offset_in_file += std.math.min(options.max_work_unit_size, remaining_file_len);
 
         var file_name_buffer: [128]u8 = undefined;
         var name = std.fmt.bufPrint(&file_name_buffer, "File_{}_Part_{}", .{ file_idx, part_idx }) catch return error.WritePatchError;
@@ -193,6 +233,13 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
         try patch.writeAll(read_buffer[0..read_bytes]);
 
         part_idx += 1;
+    }
+
+    try patch.seekTo(0);
+    try patch_file.savePatchHeader(patch_writer);
+
+    if (try patch.getPos() != reserved_header_bytes) {
+        return error.ReservedHeaderSizeMismatchesWrittenLen;
     }
 }
 
@@ -412,7 +459,7 @@ test "two files with no previous signature should result in two data operation p
         io_mock.patches.deinit();
     }
 
-    try createPerFilePatchOperations(&thread_pool, new_signature, old_signature, std.testing.allocator, .{ .patch_file_io = &io_mock.file_io });
+    try createPerFilePatchOperations(&thread_pool, new_signature, old_signature, std.testing.allocator, .{ .patch_file_io = &io_mock.file_io, .create_patch_options = .{ .staging_dir = undefined } });
 
     var patches = try io_mock.patches.flattenParallelList(std.testing.allocator);
     defer std.testing.allocator.free(patches);

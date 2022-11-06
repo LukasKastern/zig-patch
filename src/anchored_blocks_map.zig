@@ -1,5 +1,6 @@
 const std = @import("std");
 const SignatureFile = @import("signature_file.zig").SignatureFile;
+const SignatureBlock = @import("signature_file.zig").SignatureBlock;
 const BlockSize = @import("block.zig").BlockSize;
 const BlockHash = @import("block.zig").BlockHash;
 const WeakHashType = @import("block.zig").WeakHashType;
@@ -78,34 +79,24 @@ pub const AnchoredBlocksMap = struct {
     }
 
     fn anchorBlockHashes(anchored_hashes: *AnchoredBlocksMap, signature_file: SignatureFile) !void {
-        var file_index: usize = 0;
-        var block_index: usize = 0;
         var byte_offset: isize = 0;
 
         for (signature_file.blocks.items) |block| {
-            var file = signature_file.files.items[file_index];
-
-            if (@intCast(isize, file.size) - byte_offset <= 0) {
-                byte_offset = 0;
-                block_index = 0;
-                file_index += 1;
-
-                file = signature_file.files.items[file_index];
-            }
+            var file_index = block.file_idx;
+            var block_index = block.block_idx;
 
             // zig fmt: off
             var anchored_block: AnchoredBlock = .{
                 .file_index = file_index,
                 .block_index = block_index,
-                .short_size = @intCast(usize, BlockSize - std.math.min(BlockSize, @intCast(usize, file.size - @intCast(usize, byte_offset)))),
-                .hash = block
+                .short_size = 0,// @intCast(usize, BlockSize - std.math.min(BlockSize, @intCast(usize, file.size - @intCast(usize, byte_offset)))),
+                .hash = block.hash
             };
             // zig fmt: on
 
             try anchored_hashes.addAnchoredBlock(anchored_block);
 
             byte_offset += BlockSize;
-            block_index += 1;
         }
     }
 };
@@ -149,7 +140,13 @@ test "Simple signature file should be anchored" {
         .strong_hash = [16]u8{ 32, 1, 54, 21, 84, 57, 1, 67, 84, 1, 64, 21, 84, 54, 1, 45 },
     };
 
-    try signature_file.blocks.appendSlice(hashes[0..]);
+    var signature_blocks: [4]SignatureBlock = undefined;
+    signature_blocks[0] = .{ .file_idx = 5, .block_idx = 6, .hash = hashes[0] };
+    signature_blocks[1] = .{ .file_idx = 5, .block_idx = 6, .hash = hashes[1] };
+    signature_blocks[2] = .{ .file_idx = 5, .block_idx = 6, .hash = hashes[2] };
+    signature_blocks[3] = .{ .file_idx = 5, .block_idx = 6, .hash = hashes[3] };
+
+    try signature_file.blocks.appendSlice(&signature_blocks);
 
     var anchored_hash_map = try AnchoredBlocksMap.init(signature_file.*, std.testing.allocator);
     defer anchored_hash_map.deinit();
@@ -200,7 +197,13 @@ test "Blocks with same strong hash should be picked based on the preferred file"
     hashes[2] = hashes[0];
     hashes[3] = hashes[1];
 
-    try signature_file.blocks.appendSlice(hashes[0..]);
+    var signature_blocks: [4]SignatureBlock = undefined;
+    signature_blocks[0] = .{ .file_idx = 0, .block_idx = 2, .hash = hashes[0] };
+    signature_blocks[1] = .{ .file_idx = 0, .block_idx = 5, .hash = hashes[1] };
+    signature_blocks[2] = .{ .file_idx = 1, .block_idx = 4, .hash = hashes[2] };
+    signature_blocks[3] = .{ .file_idx = 1, .block_idx = 3, .hash = hashes[3] };
+
+    try signature_file.blocks.appendSlice(signature_blocks[0..]);
 
     var anchored_hash_map = try AnchoredBlocksMap.init(signature_file.*, std.testing.allocator);
     defer anchored_hash_map.deinit();

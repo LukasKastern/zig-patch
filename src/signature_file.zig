@@ -6,6 +6,12 @@ const ThreadPool = @import("zap/thread_pool_go_based.zig");
 const Getty = @import("getty");
 const WeakHashType = @import("block.zig").WeakHashType;
 
+pub const SignatureBlock = struct {
+    file_idx: usize,
+    block_idx: usize,
+    hash: BlockHash,
+};
+
 pub const SignatureFile = struct {
     const Directory = struct {
         path: []u8,
@@ -28,7 +34,7 @@ pub const SignatureFile = struct {
     directories: std.ArrayList(Directory),
     sym_links: std.ArrayList(SymLink),
     files: std.ArrayList(File),
-    blocks: std.ArrayList(BlockHash),
+    blocks: std.ArrayList(SignatureBlock),
     path_name_buffer: [512]u8 = undefined,
 
     pub fn init(allocator: std.mem.Allocator) !*SignatureFile {
@@ -37,7 +43,7 @@ pub const SignatureFile = struct {
         signature_file.files = std.ArrayList(File).init(allocator);
         signature_file.directories = std.ArrayList(Directory).init(allocator);
         signature_file.sym_links = std.ArrayList(SymLink).init(allocator);
-        signature_file.blocks = std.ArrayList(BlockHash).init(allocator);
+        signature_file.blocks = std.ArrayList(SignatureBlock).init(allocator);
         return signature_file;
     }
 
@@ -75,8 +81,9 @@ pub const SignatureFile = struct {
         file_idx: usize,
         block_idx_in_file: usize,
         signature_file: *SignatureFile,
+        dir: std.fs.Dir,
 
-        per_thread_block_hashes: std.ArrayList(std.ArrayList(BlockHash)),
+        per_thread_block_hashes: std.ArrayList(std.ArrayList(SignatureBlock)),
 
         const Self = @This();
 
@@ -89,7 +96,7 @@ pub const SignatureFile = struct {
             const signature_file = self.signature_file.files.items[self.file_idx];
             const read_offset = self.block_idx_in_file * BlockSize;
 
-            var file = try std.fs.openFileAbsolute(signature_file.name, .{});
+            var file = try self.dir.openFile(signature_file.name, .{});
             defer file.close();
 
             var buffer: [BlockSize]u8 = undefined;
@@ -106,9 +113,11 @@ pub const SignatureFile = struct {
 
             std.crypto.hash.Md5.hash(&buffer, &block_hash.strong_hash, .{});
 
+            var signature_block: SignatureBlock = .{ .file_idx = self.file_idx, .block_idx = self.block_idx, .hash = block_hash };
+
             var thread_idx = ThreadPool.Thread.current.?.idx;
             var hashes = &self.per_thread_block_hashes.items[thread_idx];
-            hashes.appendAssumeCapacity(block_hash);
+            hashes.appendAssumeCapacity(signature_block);
 
             if (self.blocks.fetchSub(1, .Release) == 1) {
                 self.are_blocks_done.store(1, .Release);
@@ -123,7 +132,9 @@ pub const SignatureFile = struct {
         var root_dir = try std.fs.openDirAbsolute(directory, .{});
         defer root_dir.close();
 
-        try self.generateFromFolderImpl(root_dir);
+        var empty_path: [0]u8 = undefined;
+
+        try self.generateFromFolderImpl(root_dir, &empty_path);
 
         var num_blocks: usize = 0;
 
@@ -137,12 +148,12 @@ pub const SignatureFile = struct {
         var tasks = try self.allocator.alloc(CalculateHashData, num_blocks);
         defer self.allocator.free(tasks);
 
-        var per_thread_block_hashes = std.ArrayList(std.ArrayList(BlockHash)).init(self.allocator);
+        var per_thread_block_hashes = std.ArrayList(std.ArrayList(SignatureBlock)).init(self.allocator);
         defer per_thread_block_hashes.deinit();
 
         try per_thread_block_hashes.resize(thread_pool.num_threads);
         for (per_thread_block_hashes.items) |*item| {
-            item.* = try std.ArrayList(BlockHash).initCapacity(self.allocator, num_blocks);
+            item.* = try std.ArrayList(SignatureBlock).initCapacity(self.allocator, num_blocks);
         }
 
         defer {
@@ -174,6 +185,7 @@ pub const SignatureFile = struct {
                 .block_idx_in_file = block_idx_in_file,
                 .signature_file = self,
                 .per_thread_block_hashes = per_thread_block_hashes,
+                .dir = root_dir,
             };
 
             batch.push(ThreadPool.Batch.from(&tasks[block_idx].task));
@@ -196,26 +208,34 @@ pub const SignatureFile = struct {
         std.log.info("Blocks are done", .{});
     }
 
-    fn generateFromFolderImpl(self: *SignatureFile, directory: std.fs.Dir) !void {
+    fn generateFromFolderImpl(self: *SignatureFile, directory: std.fs.Dir, parent_path: []u8) !void {
         var iteratable_dir = try directory.makeOpenPathIterable("", .{});
         var iterator = iteratable_dir.iterate();
 
         while (try iterator.next()) |entry| {
             var full_entry_name = try directory.realpath(entry.name, &self.path_name_buffer);
 
+            var entry_path: []u8 = undefined;
+
+            if (parent_path.len > 0) {
+                entry_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ parent_path, entry.name });
+            } else {
+                entry_path = try std.fmt.allocPrint(self.allocator, "{s}", .{entry.name});
+            }
+
             switch (entry.kind) {
                 .Directory => {
                     var nested_dir = try directory.openDir(entry.name, .{});
                     defer nested_dir.close();
 
-                    try self.generateFromFolderImpl(nested_dir);
-                    try self.directories.append(.{ .path = try directory.realpathAlloc(self.allocator, entry.name), .permissions = 0 });
+                    try self.generateFromFolderImpl(nested_dir, entry_path);
+                    try self.directories.append(.{ .path = entry_path, .permissions = 0 });
                 },
                 .File => {
                     var file = try directory.openFile(entry.name, .{});
                     defer file.close();
 
-                    try self.files.append(.{ .name = try directory.realpathAlloc(self.allocator, entry.name), .size = try file.getEndPos(), .permissions = 0 });
+                    try self.files.append(.{ .name = entry_path, .size = try file.getEndPos(), .permissions = 0 });
                 },
                 else => {
                     std.log.warn("Found unsupported file type={}, at path={s}", .{ entry.kind, full_entry_name });
@@ -224,23 +244,33 @@ pub const SignatureFile = struct {
         }
     }
 
+    pub fn validateFolderMatchesSignature(self: *SignatureFile, reference_folder: std.fs.Dir) bool {
+        for (self.directories.items) |directory| {
+            reference_folder.access(directory.path, .{}) catch |e| {
+                switch (e) {
+                    else => return false,
+                }
+            };
+        }
+
+        for (self.files.items) |file| {
+            reference_folder.access(file.name, .{}) catch |e| {
+                switch (e) {
+                    else => return false,
+                }
+            };
+        }
+
+        //TODO: Validate that all blocks match
+
+        return true;
+    }
+
     const SerializationVersion = 4;
     const TypeTag = "SignatureFile";
     const Endian = std.builtin.Endian.Big;
 
     pub fn saveSignature(self: *SignatureFile, writer: anytype) !void {
-        // var file = try std.fs.createFileAbsolute(target_path, .{});
-        // defer file.close();
-
-        // try file.setEndPos(0);
-
-        // const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
-        // var buffered_file_writer: BufferedFileWriter = .{
-        //     .unbuffered_writer = file.writer(),
-        // };
-
-        // var writer = buffered_file_writer.writer();
-
         try writer.writeInt(usize, TypeTag.len, Endian);
         try writer.writeAll(TypeTag);
         try writer.writeInt(usize, SerializationVersion, Endian);
@@ -266,9 +296,10 @@ pub const SignatureFile = struct {
 
         try writer.writeInt(usize, self.blocks.items.len, Endian);
         for (self.blocks.items) |block| {
-            // Write Length of the path
-            try writer.writeInt(WeakHashType, block.weak_hash, Endian);
-            try writer.writeAll(&block.strong_hash);
+            try writer.writeInt(usize, block.file_idx, Endian);
+            try writer.writeInt(usize, block.block_idx, Endian);
+            try writer.writeInt(WeakHashType, block.hash.weak_hash, Endian);
+            try writer.writeAll(&block.hash.strong_hash);
         }
     }
 
@@ -335,8 +366,10 @@ pub const SignatureFile = struct {
         try signature_file.blocks.resize(num_blocks);
 
         for (signature_file.blocks.items) |*block| {
-            block.weak_hash = try reader.readInt(WeakHashType, Endian);
-            try reader.readNoEof(&block.strong_hash);
+            block.file_idx = try reader.readInt(usize, Endian);
+            block.block_idx = try reader.readInt(usize, Endian);
+            block.hash.weak_hash = try reader.readInt(WeakHashType, Endian);
+            try reader.readNoEof(&block.hash.strong_hash);
         }
 
         return signature_file;
@@ -379,35 +412,46 @@ test "signature file should be same after serialization/deserialization" {
         .permissions = 5,
     });
 
-    try signature_file.blocks.append(.{
+    var hashes: [6]BlockHash = undefined;
+    hashes[0] = .{
         .weak_hash = 8,
         .strong_hash = [16]u8{ 35, 1, 46, 21, 84, 231, 1, 45, 0, 1, 154, 21, 84, 154, 1, 85 },
-    });
+    };
 
-    try signature_file.blocks.append(.{
+    hashes[1] = .{
         .weak_hash = 8,
         .strong_hash = [16]u8{ 78, 1, 99, 21, 84, 1, 33, 45, 120, 1, 54, 21, 84, 154, 1, 5 },
-    });
+    };
 
-    try signature_file.blocks.append(.{
+    hashes[2] = .{
         .weak_hash = 8,
         .strong_hash = [16]u8{ 32, 1, 54, 21, 84, 57, 1, 67, 84, 1, 64, 21, 84, 54, 1, 45 },
-    });
+    };
 
-    try signature_file.blocks.append(.{
+    hashes[3] = .{
         .weak_hash = 8,
         .strong_hash = [16]u8{ 5, 1, 245, 21, 84, 231, 154, 45, 120, 1, 154, 21, 84, 154, 1, 235 },
-    });
+    };
 
-    try signature_file.blocks.append(.{
+    hashes[4] = .{
         .weak_hash = 8,
         .strong_hash = [16]u8{ 46, 76, 56, 21, 84, 57, 54, 45, 21, 1, 64, 21, 84, 57, 1, 47 },
-    });
+    };
 
-    try signature_file.blocks.append(.{
+    hashes[5] = .{
         .weak_hash = 8,
         .strong_hash = [16]u8{ 123, 1, 123, 21, 78, 50, 54, 45, 81, 1, 54, 21, 84, 47, 1, 47 },
-    });
+    };
+
+    var signature_blocks: [6]SignatureBlock = undefined;
+    signature_blocks[0] = .{ .file_idx = 5, .block_idx = 6, .hash = hashes[0] };
+    signature_blocks[1] = .{ .file_idx = 6, .block_idx = 5, .hash = hashes[1] };
+    signature_blocks[2] = .{ .file_idx = 7, .block_idx = 4, .hash = hashes[2] };
+    signature_blocks[3] = .{ .file_idx = 8, .block_idx = 3, .hash = hashes[3] };
+    signature_blocks[4] = .{ .file_idx = 9, .block_idx = 2, .hash = hashes[4] };
+    signature_blocks[5] = .{ .file_idx = 10, .block_idx = 1, .hash = hashes[5] };
+
+    try signature_file.blocks.appendSlice(&signature_blocks);
 
     var buffer: [1200]u8 = undefined;
     var stream = std.io.fixedBufferStream(&buffer);
@@ -436,7 +480,10 @@ test "signature file should be same after serialization/deserialization" {
     }
 
     for (signature_file.blocks.items) |block, idx| {
-        try std.testing.expectEqual(block.weak_hash, deserialized_signature_file.blocks.items[idx].weak_hash);
-        try std.testing.expectEqualSlices(u8, &block.strong_hash, &deserialized_signature_file.blocks.items[idx].strong_hash);
+        try std.testing.expectEqual(block.file_idx, deserialized_signature_file.blocks.items[idx].file_idx);
+        try std.testing.expectEqual(block.block_idx, deserialized_signature_file.blocks.items[idx].block_idx);
+
+        try std.testing.expectEqual(block.hash.weak_hash, deserialized_signature_file.blocks.items[idx].hash.weak_hash);
+        try std.testing.expectEqualSlices(u8, &block.hash.strong_hash, &deserialized_signature_file.blocks.items[idx].hash.strong_hash);
     }
 }
