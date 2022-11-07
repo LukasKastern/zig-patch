@@ -24,7 +24,7 @@ pub const SignatureFile = struct {
         permissions: u8,
     };
 
-    const File = struct {
+    pub const File = struct {
         name: []const u8,
         size: usize,
         permissions: u8,

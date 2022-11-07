@@ -9,7 +9,7 @@
             "command": "zig",
             "args": [
                 "build",
-                // "-Drelease-safe=true",
+                "-Drelease-safe=true",
             ],
             "group": {
                 "kind": "build",

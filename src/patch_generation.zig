@@ -24,7 +24,7 @@ const PatchFileIO = struct {
     read_patch_file: ReadPatchFile,
 };
 
-const DefaultMaxWorkUnitSize = 1024 * 1024 * 25;
+pub const DefaultMaxWorkUnitSize = 1024 * 1024 * 25;
 
 const CreatePatchOptions = struct {
     max_work_unit_size: usize = DefaultMaxWorkUnitSize,
@@ -174,14 +174,12 @@ fn numRealFilesInPatch(signature: *SignatureFile) usize {
 }
 
 pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *SignatureFile, staging_dir: std.fs.Dir, allocator: std.mem.Allocator, options: CreatePatchOptions) !void {
-    var num_patch_files: usize = numPatchFilesNeeded(new_signature, options.max_work_unit_size);
-
     var patch = try staging_dir.createFile("Patch.pwd", .{});
     defer patch.close();
 
     var patch_writer = patch.writer();
 
-    var read_buffer = try allocator.alloc(u8, options.max_work_unit_size);
+    var read_buffer = try allocator.alloc(u8, options.max_work_unit_size + 8096);
     defer allocator.free(read_buffer);
 
     var patch_file = try PatchHeader.init(new_signature, old_signature, allocator);
@@ -198,41 +196,53 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
     try patch_file.savePatchHeader(patch_writer);
     var reserved_header_bytes = try patch.getPos();
 
-    var offset_in_file: usize = 0;
+    var offset_in_file: usize = reserved_header_bytes;
 
-    var part_idx: usize = 0;
     var file_idx: usize = 0;
     var file_idx_in_patch: usize = 0;
 
-    var patch_file_idx: usize = 0;
-    while (patch_file_idx < num_patch_files) : (patch_file_idx += 1) {
-        var remaining_file_len = @intCast(isize, new_signature.files.items[file_idx].size) - @intCast(isize, part_idx * options.max_work_unit_size);
+    while (file_idx_in_patch < num_files) : (file_idx_in_patch += 1) {
+        var file = new_signature.files.items[file_idx];
 
-        if (remaining_file_len < 0) {
-            part_idx = 0;
+        while (file.size == 0) {
             file_idx += 1;
 
-            while (new_signature.files.items[file_idx].size == 0) {
-                file_idx += 1;
-            }
+            if (file_idx == num_files)
+                break;
 
-            file_idx_in_patch += 1;
-            remaining_file_len = @intCast(isize, new_signature.files.items[file_idx].size);
+            file = new_signature.files.items[file_idx];
         }
 
+        var num_parts = @floatToInt(usize, @ceil(@intToFloat(f64, file.size) / @intToFloat(f64, options.max_work_unit_size)));
+
         patch_file.sections.items[file_idx_in_patch] = .{ .file_idx = file_idx, .operations_start_pos_in_file = offset_in_file };
-        offset_in_file += std.math.min(options.max_work_unit_size, remaining_file_len);
+        std.debug.assert(offset_in_file == try patch.getPos());
 
-        var file_name_buffer: [128]u8 = undefined;
-        var name = std.fmt.bufPrint(&file_name_buffer, "File_{}_Part_{}", .{ file_idx, part_idx }) catch return error.WritePatchError;
+        var num_patch_file: usize = 0;
+        while (num_patch_file < num_parts) : (num_patch_file += 1) {
+            var file_name_buffer: [128]u8 = undefined;
+            var name = std.fmt.bufPrint(&file_name_buffer, "File_{}_Part_{}", .{ file_idx, num_patch_file }) catch return error.WritePatchError;
 
-        var fs_part = try staging_dir.openFile(name, .{});
-        defer fs_part.close();
+            var fs_part = staging_dir.openFile(name, .{}) catch |e| {
+                switch (e) {
+                    else => {
+                        std.log.err("Failed to open patch file {s}, error {}", .{ file_name_buffer, e });
+                        return error.FailedToOpenPatchFile;
+                    },
+                }
+            };
 
-        var read_bytes = try fs_part.readAll(read_buffer);
-        try patch.writeAll(read_buffer[0..read_bytes]);
+            defer fs_part.close();
 
-        part_idx += 1;
+            var read_bytes = try fs_part.readAll(read_buffer);
+            std.debug.assert(read_bytes == try fs_part.getEndPos());
+
+            try patch.writeAll(read_buffer[0..read_bytes]);
+
+            offset_in_file += read_bytes;
+        }
+
+        file_idx += 1;
     }
 
     try patch.seekTo(0);
@@ -294,8 +304,6 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
         }
     };
 
-    var batch = ThreadPool.Batch{};
-
     var tasks = try allocator.alloc(GeneratePatchTask, num_patch_files);
     defer allocator.free(tasks);
 
@@ -314,6 +322,8 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
             allocator.free(thread_buffer);
         }
     }
+
+    var batch = ThreadPool.Batch{};
 
     var part_idx: usize = 0;
     var file_idx: usize = 0;
@@ -459,7 +469,7 @@ test "two files with no previous signature should result in two data operation p
         io_mock.patches.deinit();
     }
 
-    try createPerFilePatchOperations(&thread_pool, new_signature, old_signature, std.testing.allocator, .{ .patch_file_io = &io_mock.file_io, .create_patch_options = .{ .staging_dir = undefined } });
+    try createPerFilePatchOperations(&thread_pool, new_signature, old_signature, std.testing.allocator, .{ .patch_file_io = &io_mock.file_io, .create_patch_options = .{ .staging_dir = undefined, .build_dir = undefined } });
 
     var patches = try io_mock.patches.flattenParallelList(std.testing.allocator);
     defer std.testing.allocator.free(patches);

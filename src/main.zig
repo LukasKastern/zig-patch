@@ -243,6 +243,9 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
         return;
     }
 
+    var timer = try time.Timer.start();
+    var start_sample = timer.read();
+
     var patch_file = std.fs.openFileAbsolute(parsed_args.args.patch.?, .{}) catch |e| {
         switch (e) {
             else => {
@@ -298,23 +301,45 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
         return;
     }
 
-    std.fs.deleteDirAbsolute(parsed_args.args.target_folder.?) catch |e| {
+    std.fs.deleteTreeAbsolute(parsed_args.args.target_folder.?) catch |e| {
         switch (e) {
-            error.DirNotEmpty => {
-                std.log.err("Cannot use specified target folder since it's not empty.", .{});
-                return;
+            error.FileNotFound => {
+                // All good!
             },
-            else => {},
+
+            // error.DirNotEmpty => {
+            //     std.log.err("Cannot use specified target folder since it's not empty.", .{});
+            //     return error.FailedToDeleteTargetDir;
+            // },
+            else => {
+                std.log.err("DeleteDir failed with error={}", .{e});
+                return error.FailedToDeleteTargetDir;
+            },
         }
     };
 
-    try std.fs.makeDirAbsolute(parsed_args.args.target_folder.?);
+    std.fs.makeDirAbsolute(parsed_args.args.target_folder.?) catch |e| {
+        switch (e) {
+            error.PathAlreadyExists => {
+                std.log.err("Failed to delete target folder. Make sure it's empty!", .{});
+                return error.FailedToDeleteTargetDir;
+            },
+            else => {
+                std.log.err("Failed to create target folder. Error={}", .{e});
+                return;
+            },
+        }
+    };
+
     var target_dir = try std.fs.openDirAbsolute(parsed_args.args.target_folder.?, .{});
     defer target_dir.close();
 
     try ApplyPatch.createFileStructure(target_dir, patch);
 
-    _ = thread_pool;
+    try ApplyPatch.applyPatch(target_dir, parsed_args.args.patch.?, patch, thread_pool, allocator);
+    var end_sample = timer.read();
+
+    std.log.info("Applied Patch in {d:2}ms", .{(@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000});
 }
 
 pub fn main() !void {

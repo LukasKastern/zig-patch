@@ -73,6 +73,8 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
     return patch_operations;
 }
 
+pub fn applyOperations() void {}
+
 test "Operations for buffer without Reference should rebuild the original buffer" {
     const max_operation_len: usize = 512;
 
@@ -157,9 +159,12 @@ pub fn saveOperations(operations: std.ArrayList(PatchOperation), writer: anytype
     for (operations.items) |operation| {
         switch (operation) {
             .Data => |data| {
+                try writer.writeInt(usize, 1, Endian);
+                try writer.writeInt(usize, data.len, Endian);
                 try writer.writeAll(data);
             },
             .BlockRange => |range| {
+                try writer.writeInt(usize, 2, Endian);
                 try writer.writeInt(usize, range.file_index, Endian);
                 try writer.writeInt(usize, range.block_index, Endian);
                 try writer.writeInt(usize, range.block_span, Endian);
@@ -172,41 +177,99 @@ pub fn saveOperations(operations: std.ArrayList(PatchOperation), writer: anytype
 pub fn loadOperations(allocator: std.mem.Allocator, reader: anytype) !std.ArrayList(PatchOperation) {
     var num_operations = try reader.readInt(usize, Endian);
 
-    var operations = try std.ArrayList(PatchOperation).initCapacity(num_operations, allocator);
+    if (num_operations > 100000) {
+        std.log.err("Invalid num operations", .{});
+    }
+
+    var operations = try std.ArrayList(PatchOperation).initCapacity(allocator, num_operations);
     errdefer operations.deinit();
 
     var operation_idx: usize = 0;
     while (operation_idx < num_operations) : (operation_idx += 1) {
         var operation_type_raw = try reader.readInt(usize, Endian);
-
-        var operation_type = @intToEnum(PatchOperation, operation_type_raw);
         var operation: PatchOperation = undefined;
 
-        switch (operation_type) {
-            .Data => {
-                var data_len = try reader.readInt(usize, Endian);
-                var data = try allocator.alloc(u8, data_len);
+        if (operation_type_raw == 1) {
+            var data_len = try reader.readInt(usize, Endian);
+            var data = try allocator.alloc(u8, data_len);
 
-                try reader.readNoEof(data[0..data_len]);
+            try reader.readNoEof(data[0..data_len]);
 
-                operation = PatchOperation{
-                    .Data = data,
-                };
-            },
-            .BlockRange => {
-                var file_idx = try reader.readInt(usize, Endian);
-                var block_idx = try reader.readInt(usize, Endian);
-                var block_span = try reader.readInt(usize, Endian);
+            operation = PatchOperation{
+                .Data = data,
+            };
+        } else if (operation_type_raw == 2) {
+            var file_idx = try reader.readInt(usize, Endian);
+            var block_idx = try reader.readInt(usize, Endian);
+            var block_span = try reader.readInt(usize, Endian);
 
-                operation = PatchOperation{
-                    .BlockRange = .{ .file_index = file_idx, .block_index = block_idx, .block_span = block_span },
-                };
-            },
-            else => return error.UnknownOperationTypeFound,
+            operation = PatchOperation{
+                .BlockRange = .{ .file_index = file_idx, .block_index = block_idx, .block_span = block_span },
+            };
         }
 
         operations.appendAssumeCapacity(operation);
     }
 
     return operations;
+}
+
+test "operations should be same after deserialization" {
+    var operations = std.ArrayList(PatchOperation).init(std.testing.allocator);
+    defer operations.deinit();
+
+    try operations.append(.{
+        .BlockRange = .{ .file_index = 1, .block_index = 2, .block_span = 4 },
+    });
+
+    var operation_data: [256]u8 = undefined;
+    var operation_data_2: [512]u8 = undefined;
+
+    try operations.append(.{ .Data = &operation_data });
+
+    try operations.append(.{
+        .BlockRange = .{ .file_index = 1, .block_index = 2, .block_span = 4 },
+    });
+
+    try operations.append(.{ .Data = &operation_data_2 });
+
+    var buffer: [4096]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buffer);
+
+    var writer = stream.writer();
+
+    try saveOperations(operations, writer);
+
+    var written_end_pos = try stream.getPos();
+    try stream.seekTo(0);
+
+    var reader = stream.reader();
+
+    var loaded_operations = try loadOperations(std.testing.allocator, reader);
+    defer loaded_operations.deinit();
+
+    defer {
+        for (loaded_operations.items) |operation| {
+            if (operation == .Data) {
+                std.testing.allocator.free(operation.Data);
+            }
+        }
+    }
+
+    try std.testing.expectEqual(written_end_pos, try stream.getPos());
+    try std.testing.expectEqual(operations.items.len, loaded_operations.items.len);
+
+    for (operations.items) |operation, idx| {
+        var loaded_operation = loaded_operations.items[idx];
+
+        if (operation == .BlockRange) {
+            try std.testing.expectEqual(operation.BlockRange.file_index, loaded_operation.BlockRange.file_index);
+            try std.testing.expectEqual(operation.BlockRange.block_index, loaded_operation.BlockRange.block_index);
+            try std.testing.expectEqual(operation.BlockRange.block_span, loaded_operation.BlockRange.block_span);
+        } else if (operation == .Data) {
+            try std.testing.expectEqualSlices(u8, operation.Data, loaded_operation.Data);
+        } else {
+            try std.testing.expect(false);
+        }
+    }
 }
