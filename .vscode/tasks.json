@@ -9,7 +9,7 @@
             "command": "zig",
             "args": [
                 "build",
-                "-Drelease-safe=true",
+                // "-Drelease-safe=true",
             ],
             "group": {
                 "kind": "build",
@@ -65,7 +65,7 @@
             "command": "zig",
             "args": [
                 "build",
-                "build-test"
+                "test"
             ],
             "group": {
                 "kind": "test",
@@ -76,6 +76,12 @@
                 "showReuseMessage": false,
                 "clear": true
             }
+        },
+        {
+            "label": "try full patch",
+            "type": "shell",
+            "command": "cd ${workspaceFolder}/zig-out/bin; ./wharf-zig.exe \"create --folder ./OriginalBuild\"; ./wharf-zig.exe \"apply --patch ./Patch.pwd --target_folder ./BuildFromFullPatch\"",
+            "args": []
         }
     ]
 }

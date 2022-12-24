@@ -129,7 +129,8 @@ pub const SignatureFile = struct {
     pub fn generateFromFolder(self: *SignatureFile, directory: []const u8, thread_pool: *ThreadPool) !void {
         self.deallocateBuffers();
 
-        var root_dir = try std.fs.openDirAbsolute(directory, .{});
+        var cwd = std.fs.cwd();
+        var root_dir = try cwd.openDir(directory, .{});
         defer root_dir.close();
 
         var empty_path: [0]u8 = undefined;

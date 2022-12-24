@@ -46,7 +46,6 @@ pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
         }
 
         if (!did_dir_exist) {
-            //TODO: Should we check if the directory is empty (lukas)?
             try target_dir.makePath(directory.path);
         }
     }
@@ -59,7 +58,6 @@ pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
         }
 
         if (!did_file_exist) {
-            //TODO: Should we check if the directory is empty (lukas)?
             var new_file_fs = try target_dir.createFile(file.name, .{});
             new_file_fs.close();
         }
@@ -145,7 +143,7 @@ pub fn applyPatch(target_dir: std.fs.Dir, patch_file_path: []const u8, patch: *P
     defer allocator.free(per_thread_patch_files);
 
     for (per_thread_patch_files) |*per_thread_patch_file| {
-        per_thread_patch_file.* = try std.fs.openFileAbsolute(patch_file_path, .{});
+        per_thread_patch_file.* = try std.fs.cwd().openFile(patch_file_path, .{});
     }
 
     defer {
