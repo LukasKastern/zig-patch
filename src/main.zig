@@ -86,7 +86,7 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         return;
     }
 
-    try operations.createPatch(folder.?, previous_patch, thread_pool, allocator);
+    try operations.createPatch(folder.?, previous_patch, thread_pool, allocator, null);
 }
 
 fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
@@ -177,6 +177,7 @@ test {
     std.testing.refAllDecls(@import("signature_file.zig"));
     std.testing.refAllDecls(@import("patch_generation.zig"));
     std.testing.refAllDecls(@import("patch_header.zig"));
+    std.testing.refAllDecls(@import("e2e_tests.zig"));
 }
 
 //

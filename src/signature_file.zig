@@ -3,7 +3,6 @@ const BlockHash = @import("block.zig").BlockHash;
 const BlockSize = @import("block.zig").BlockSize;
 const RollingHash = @import("rolling_hash.zig").RollingHash;
 const ThreadPool = @import("zap/thread_pool_go_based.zig");
-const Getty = @import("getty");
 const WeakHashType = @import("block.zig").WeakHashType;
 
 pub const SignatureBlock = struct {
@@ -126,12 +125,10 @@ pub const SignatureFile = struct {
         }
     };
 
-    pub fn generateFromFolder(self: *SignatureFile, directory: []const u8, thread_pool: *ThreadPool) !void {
+    pub fn generateFromFolder(self: *SignatureFile, dir: std.fs.Dir, thread_pool: *ThreadPool) !void {
         self.deallocateBuffers();
 
-        var cwd = std.fs.cwd();
-        var root_dir = try cwd.openDir(directory, .{});
-        defer root_dir.close();
+        var root_dir = dir;
 
         var empty_path: [0]u8 = undefined;
 
@@ -198,7 +195,7 @@ pub const SignatureFile = struct {
 
         try self.blocks.ensureTotalCapacity(num_blocks);
 
-        while (are_blocks_done.load(.Acquire) == 0) {
+        while (blocks_remaining.load(.Acquire) > 0 and are_blocks_done.load(.Acquire) == 0) {
             std.Thread.Futex.wait(&are_blocks_done, 0);
         }
 

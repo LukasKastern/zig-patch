@@ -6,11 +6,19 @@ const ApplyPatch = @import("apply_patch.zig");
 const SignatureFile = @import("signature_file.zig").SignatureFile;
 const PatchGeneration = @import("patch_generation.zig");
 
-pub fn applyPatch(patch_file_path: []const u8, source_folder_path: ?[]const u8, target_folder_path: []const u8, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
+pub const OperationConfig = struct {
+    thread_pool: *ThreadPool,
+    allocator: std.mem.Allocator,
+    working_dir: std.fs.Dir,
+};
+
+pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: ?[]const u8, patched_output_path: []const u8, config: OperationConfig) !void {
+    var allocator = config.allocator;
+    var thread_pool = config.thread_pool;
+    var cwd: std.fs.Dir = config.working_dir;
+
     var timer = try time.Timer.start();
     var start_sample = timer.read();
-
-    var cwd = std.fs.cwd();
 
     var patch_file = cwd.openFile(patch_file_path, .{}) catch |e| {
         switch (e) {
@@ -41,12 +49,12 @@ pub fn applyPatch(patch_file_path: []const u8, source_folder_path: ?[]const u8, 
     var validate_source_folder = patch.old.blocks.items.len > 0 or patch.old.directories.items.len > 0 or patch.old.files.items.len > 0;
 
     if (validate_source_folder) {
-        if (source_folder_path == null) {
+        if (folder_to_patch == null) {
             std.log.err("No --source_folder <str> passed to apply. But the specified patch requires a reference folder.", .{});
             return;
         }
 
-        var source_folder = std.fs.openDirAbsolute(source_folder_path.?, .{}) catch |e| {
+        var source_folder = std.fs.openDirAbsolute(folder_to_patch.?, .{}) catch |e| {
             switch (e) {
                 else => {
                     std.log.err("Failed to open soource folder, error => {}", .{e});
@@ -62,7 +70,7 @@ pub fn applyPatch(patch_file_path: []const u8, source_folder_path: ?[]const u8, 
         }
     }
 
-    cwd.deleteTree(target_folder_path) catch |e| {
+    cwd.deleteTree(patched_output_path) catch |e| {
         switch (e) {
             error.BadPathName => {
                 // All good!
@@ -79,7 +87,7 @@ pub fn applyPatch(patch_file_path: []const u8, source_folder_path: ?[]const u8, 
         }
     };
 
-    cwd.makeDir(target_folder_path) catch |e| {
+    cwd.makeDir(patched_output_path) catch |e| {
         switch (e) {
             error.PathAlreadyExists => {
                 std.log.err("Failed to delete target folder. Make sure it's empty!", .{});
@@ -92,7 +100,7 @@ pub fn applyPatch(patch_file_path: []const u8, source_folder_path: ?[]const u8, 
         }
     };
 
-    var target_dir = try cwd.openDir(target_folder_path, .{});
+    var target_dir = try cwd.openDir(patched_output_path, .{});
     defer target_dir.close();
 
     try ApplyPatch.createFileStructure(target_dir, patch);
@@ -103,10 +111,10 @@ pub fn applyPatch(patch_file_path: []const u8, source_folder_path: ?[]const u8, 
     std.log.info("Applied Patch in {d:2}ms", .{(@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000});
 }
 
-fn findPatchStagingDir() !std.fs.Dir {
+fn findPatchStagingDir(cwd: std.fs.Dir) !std.fs.Dir {
     const MaxAttempts = 50;
 
-    var dir = std.fs.cwd();
+    var dir = cwd;
 
     var attempt: usize = 0;
 
@@ -148,13 +156,16 @@ fn findPatchStagingDir() !std.fs.Dir {
     return error.NoSuitableStagingPathFound;
 }
 
-pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const u8, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
-    var cwd = std.fs.cwd();
+pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const u8, config: OperationConfig) !void {
+    var allocator = config.allocator;
+    var thread_pool = config.thread_pool;
+    var cwd: std.fs.Dir = config.working_dir;
 
     var open_dir = cwd.openDir(source_folder_path, .{}) catch {
         std.log.err("Specified target folder \"{s}\" could not be opened, make sure it exists", .{source_folder_path});
-        return;
+        return error.TargetFolderError;
     };
+
     defer open_dir.close();
 
     var timer = try time.Timer.start();
@@ -182,7 +193,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const
 
         prev_signature_file = SignatureFile.loadSignature(reader, allocator) catch |err| {
             std.log.err("Failed to load previous signature file at path {s}, error={}", .{ previous_patch_path.?, err });
-            std.os.exit(1);
+            return error.ReferenceSignatureLoadFailed;
         };
 
         var post_signature_load_time = timer.read();
@@ -193,7 +204,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const
     var staging_dir_path: []u8 = undefined;
 
     {
-        var staging_dir = try findPatchStagingDir();
+        var staging_dir = try findPatchStagingDir(cwd);
         defer staging_dir.close();
 
         var new_signature_file = try SignatureFile.init(allocator);
@@ -202,7 +213,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const
         std.log.info("Generating Signature from {s}...", .{source_folder_path});
 
         var generate_signature_start_sample = timer.read();
-        try new_signature_file.generateFromFolder(source_folder_path, thread_pool);
+        try new_signature_file.generateFromFolder(open_dir, thread_pool);
         var generate_signature_finish_sample = timer.read();
 
         std.log.info("Generated Signature in {d:2}ms", .{(@intToFloat(f64, generate_signature_finish_sample) - @intToFloat(f64, generate_signature_start_sample)) / 1000000});
