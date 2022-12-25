@@ -5,6 +5,7 @@ const PatchHeader = @import("patch_header.zig").PatchHeader;
 const ApplyPatch = @import("apply_patch.zig");
 const SignatureFile = @import("signature_file.zig").SignatureFile;
 const PatchGeneration = @import("patch_generation.zig");
+const utils = @import("utils.zig");
 
 pub const OperationConfig = struct {
     thread_pool: *ThreadPool,
@@ -12,7 +13,7 @@ pub const OperationConfig = struct {
     working_dir: std.fs.Dir,
 };
 
-pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: ?[]const u8, patched_output_path: []const u8, config: OperationConfig) !void {
+pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, config: OperationConfig) !void {
     var allocator = config.allocator;
     var thread_pool = config.thread_pool;
     var cwd: std.fs.Dir = config.working_dir;
@@ -48,66 +49,71 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: ?[]const u8, pat
 
     var validate_source_folder = patch.old.blocks.items.len > 0 or patch.old.directories.items.len > 0 or patch.old.files.items.len > 0;
 
-    if (validate_source_folder) {
-        if (folder_to_patch == null) {
-            std.log.err("No --source_folder <str> passed to apply. But the specified patch requires a reference folder.", .{});
-            return;
+    var staging_folder_path_buffer: [1024]u8 = undefined;
+
+    var tmp_folder: ?std.fs.Dir = try findPatchStagingDir(cwd);
+    defer {
+        if (tmp_folder) |*tmp_unwrapped| {
+            tmp_unwrapped.close();
         }
+    }
 
-        var source_folder = std.fs.openDirAbsolute(folder_to_patch.?, .{}) catch |e| {
-            switch (e) {
-                else => {
-                    std.log.err("Failed to open soource folder, error => {}", .{e});
-                    return;
-                },
-            }
-        };
-        defer source_folder.close();
+    var tmp_folder_path = try tmp_folder.?.realpath("", &staging_folder_path_buffer);
 
-        if (!patch.old.validateFolderMatchesSignature(source_folder)) {
+    var source_folder: ?std.fs.Dir = null;
+    defer {
+        if (source_folder) |*source_folder_unwrapped| {
+            source_folder_unwrapped.close();
+        }
+    }
+
+    var source_folder_with_err = cwd.openDir(folder_to_patch, .{});
+
+    if (source_folder_with_err) |folder_without_err| {
+        source_folder = folder_without_err;
+    } else |err| {
+        switch (err) {
+            error.FileNotFound => {
+                // Not finding the directory will fail further down in case we need the source folder.
+                // If the patch doesn't require a reference this error is okay.
+            },
+            else => {
+                std.log.err("Failed to open source folder, error => {}", .{err});
+                return error.FailedToOpenSourceFolder;
+            },
+        }
+    }
+
+    if (validate_source_folder) {
+        if (source_folder == null or !patch.old.validateFolderMatchesSignature(source_folder.?)) {
             std.log.err("Source folder doesn't match reference that the patch was generated from", .{});
             return;
         }
     }
 
-    cwd.deleteTree(patched_output_path) catch |e| {
-        switch (e) {
-            error.BadPathName => {
-                // All good!
-            },
+    if (source_folder) |source_folde_unwrapped| {
+        // Copy the folder to patch into our temporary staging folder.
+        try utils.copyFolder(tmp_folder.?, source_folde_unwrapped);
+    }
 
-            // error.DirNotEmpty => {
-            //     std.log.err("Cannot use specified target folder since it's not empty.", .{});
-            //     return error.FailedToDeleteTargetDir;
-            // },
-            else => {
-                std.log.err("DeleteDir failed with error={}", .{e});
-                return error.FailedToDeleteTargetDir;
-            },
-        }
-    };
+    try ApplyPatch.createFileStructure(tmp_folder.?, patch);
 
-    cwd.makeDir(patched_output_path) catch |e| {
-        switch (e) {
-            error.PathAlreadyExists => {
-                std.log.err("Failed to delete target folder. Make sure it's empty!", .{});
-                return error.FailedToDeleteTargetDir;
-            },
-            else => {
-                std.log.err("Failed to create target folder. Error={}", .{e});
-                return;
-            },
-        }
-    };
+    try ApplyPatch.applyPatch(cwd, tmp_folder.?, patch_file_path, patch, thread_pool, allocator);
 
-    var target_dir = try cwd.openDir(patched_output_path, .{});
-    defer target_dir.close();
+    if (source_folder) |*source_folder_unwrapped| {
+        // If we already have a folder at the source path we back it up.
+        // source_folder_unwrapped.rename()
 
-    try ApplyPatch.createFileStructure(target_dir, patch);
+        source_folder_unwrapped.close();
+        source_folder = null;
+        try cwd.deleteTree(folder_to_patch);
+    }
 
-    try ApplyPatch.applyPatch(target_dir, patch_file_path, patch, thread_pool, allocator);
+    tmp_folder.?.close();
+    tmp_folder = null;
+    try cwd.rename(tmp_folder_path, folder_to_patch);
+
     var end_sample = timer.read();
-
     std.log.info("Applied Patch in {d:2}ms", .{(@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000});
 }
 
@@ -178,11 +184,19 @@ pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const
         }
     }
 
+    var previous_patch_header: ?*PatchHeader = null;
+    defer {
+        if (previous_patch_header) |patch_header_unwrapped| {
+            patch_header_unwrapped.old.deinit();
+            patch_header_unwrapped.deinit();
+        }
+    }
+
     if (previous_patch_path == null) {
         std.log.warn("{s}\n\n", .{"No previous patch specified. A full patch will be generated. Specify a previous patch using --previous_patch <path>"});
         prev_signature_file = try SignatureFile.init(allocator);
     } else {
-        var out_file = try std.fs.openFileAbsolute(previous_patch_path.?, .{});
+        var out_file = try cwd.openFile(previous_patch_path.?, .{});
         defer out_file.close();
 
         const BufferedFileReader = std.io.BufferedReader(1200, std.fs.File.Reader);
@@ -191,10 +205,16 @@ pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const
         };
         var reader = buffered_file_reader.reader();
 
-        prev_signature_file = SignatureFile.loadSignature(reader, allocator) catch |err| {
-            std.log.err("Failed to load previous signature file at path {s}, error={}", .{ previous_patch_path.?, err });
-            return error.ReferenceSignatureLoadFailed;
+        previous_patch_header = PatchHeader.loadPatchHeader(allocator, reader) catch |e| {
+            switch (e) {
+                else => {
+                    std.log.err("Failed to load previous signature file at path {s}, error={}", .{ previous_patch_path.?, e });
+                    return error.ReferenceSignatureLoadFailed;
+                },
+            }
         };
+
+        prev_signature_file = previous_patch_header.?.new;
 
         var post_signature_load_time = timer.read();
         std.log.info("Loaded Previous Signature in {d:2}ms", .{(@intToFloat(f64, post_signature_load_time) - @intToFloat(f64, start_sample)) / 1000000});

@@ -86,7 +86,11 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         return;
     }
 
-    try operations.createPatch(folder.?, previous_patch, thread_pool, allocator, null);
+    try operations.createPatch(folder.?, previous_patch, .{
+        .working_dir = std.fs.cwd(),
+        .thread_pool = thread_pool,
+        .allocator = allocator,
+    });
 }
 
 fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
@@ -128,7 +132,11 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
         return;
     }
 
-    try operations.applyPatch(parsed_args.args.patch.?, parsed_args.args.source_folder, parsed_args.args.target_folder.?, thread_pool, allocator);
+    try operations.applyPatch(parsed_args.args.patch.?, parsed_args.args.source_folder, parsed_args.args.target_folder.?, .{
+        .working_dir = std.fs.cwd(),
+        .thread_pool = thread_pool,
+        .allocator = allocator,
+    });
 }
 
 pub fn main() !void {

@@ -17,19 +17,45 @@ const GenerateFolderOptions = struct {
     max_file_size: usize = 64 * 256,
 };
 
+// Fills the given buffer with a random sequence of lowercase letter a-z.
+fn GeneratePathName(rand: std.rand.Random, buffer: []u8) void {
+    for (buffer) |*element| {
+        element.* = rand.intRangeAtMost(u8, 97, 122);
+    }
+}
+
+fn generateFile(rand: std.rand.Random, file: std.fs.File, file_size: usize) !void {
+    var start_num = rand.int(usize);
+    var written_idx: usize = 0;
+
+    const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
+    var buffered_file_writer: BufferedFileWriter = .{
+        .unbuffered_writer = file.writer(),
+    };
+
+    var writer = buffered_file_writer.writer();
+
+    var num = start_num;
+    while (written_idx < file_size) : (written_idx += 1) {
+        var result: usize = 0;
+
+        if (!@addWithOverflow(usize, num, 56484, &result))
+            result = num + 56484;
+
+        if (!@mulWithOverflow(usize, num, 2, &result))
+            result = num * 2;
+
+        try writer.writeIntBig(usize, num);
+    }
+
+    try buffered_file_writer.flush();
+}
+
 fn generateTestFolder(seed: u64, directory: std.fs.Dir, opt: GenerateFolderOptions) !void {
     var prng = std.rand.DefaultPrng.init(seed);
     var random = prng.random();
 
     const GenerateImpl = struct {
-
-        // Fills the given buffer with a random sequence of lowercase letter a-z.
-        fn GeneratePathName(rand: std.rand.Random, buffer: []u8) void {
-            for (buffer) |*element| {
-                element.* = rand.intRangeAtMost(u8, 97, 122);
-            }
-        }
-
         pub fn Generate(rand: std.rand.Random, dir: std.fs.Dir, options: GenerateFolderOptions) !void {
             var num_files_to_gen = rand.intRangeAtMost(usize, options.min_files, options.max_files);
 
@@ -43,28 +69,7 @@ fn generateTestFolder(seed: u64, directory: std.fs.Dir, opt: GenerateFolderOptio
 
                 const file_size = rand.intRangeAtMost(usize, options.min_file_size, options.max_file_size);
 
-                var start_num = rand.int(usize);
-                var written_idx: usize = 0;
-
-                const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
-                var buffered_file_writer: BufferedFileWriter = .{
-                    .unbuffered_writer = file.writer(),
-                };
-
-                var writer = buffered_file_writer.writer();
-
-                var num = start_num;
-                while (written_idx < file_size) : (written_idx += 1) {
-                    var result: usize = 0;
-
-                    if (!@addWithOverflow(usize, num, 56484, &result))
-                        result = num + 56484;
-
-                    if (!@mulWithOverflow(usize, num, 2, &result))
-                        result = num * 2;
-
-                    try writer.writeIntBig(usize, num);
-                }
+                try generateFile(rand, file, file_size);
             }
 
             var depth = rand.intRangeAtMost(usize, options.min_depth, options.max_depth);
@@ -77,6 +82,10 @@ fn generateTestFolder(seed: u64, directory: std.fs.Dir, opt: GenerateFolderOptio
 
             var modifiedOptions = options;
             modifiedOptions.max_depth -= 1;
+
+            if (modifiedOptions.min_depth > 0) {
+                modifiedOptions.min_depth -= 1;
+            }
 
             var directory_idx: usize = 0;
             while (directory_idx < num_directories_to_gen) : (directory_idx += 1) {
@@ -227,7 +236,7 @@ test "Full patch should match source folder" {
     };
 
     try operations.createPatch("Original", null, operation_config);
-    try operations.applyPatch("Patch.pwd", null, "Patched", operation_config);
+    try operations.applyPatch("Patch.pwd", "Patched", operation_config);
 
     {
         var src_folder = try cwd.openDir(src_folder_path, .{});
@@ -238,4 +247,235 @@ test "Full patch should match source folder" {
 
         try std.testing.expect(try areDirectoriesEqual(src_folder, target_folder, &thread_pool, std.testing.allocator));
     }
+}
+
+// Generate two identical folders.
+// Create patch from one (to get the signature file).
+// Delete folders/files from one - regenerate patch with first patch as a reference.
+// Apply patch and check that both folders are the same.
+test "Patch should delete/create files and folders" {
+    return error.SkipZigTest;
+    // var prng = std.rand.DefaultPrng.init(14123);
+    // var random = prng.random();
+
+    // const cwd = std.fs.cwd();
+    // const TestRootPath = "temp/DeleteAndCreateContent";
+    // cwd.makeDir("temp") catch |err| {
+    //     switch (err) {
+    //         error.PathAlreadyExists => {},
+    //         else => {
+    //             return error.CouldntCreateTemp;
+    //         },
+    //     }
+    // };
+
+    // try cwd.deleteTree(TestRootPath);
+    // try cwd.makeDir(TestRootPath);
+    // var test_root_dir = try cwd.openDir(TestRootPath, .{});
+    // defer test_root_dir.close();
+
+    // var patched_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    // defer std.testing.allocator.free(patched_folder_path);
+
+    // var modified_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Modified" });
+    // defer std.testing.allocator.free(modified_folder_path);
+
+    // // Create the source folder
+    // {
+    //     try cwd.makeDir(patched_folder_path);
+    //     var src_folder = try cwd.openDir(patched_folder_path, .{});
+    //     defer src_folder.close();
+
+    //     try generateTestFolder(12587, src_folder, .{ .min_depth = 2, .max_depth = 3 });
+    // }
+
+    // // Create the target folder
+    // {
+    //     try cwd.makeDir(modified_folder_path);
+    //     var target_folder = try cwd.openDir(modified_folder_path, .{});
+    //     defer target_folder.close();
+
+    //     try generateTestFolder(12587, target_folder, .{ .min_depth = 2, .max_depth = 3 });
+    // }
+
+    // var thread_pool = ThreadPool.init(.{ .max_threads = 1 });
+    // thread_pool.spawnThreads();
+
+    // var operation_config: operations.OperationConfig = .{
+    //     .working_dir = test_root_dir,
+    //     .thread_pool = &thread_pool,
+    //     .allocator = std.testing.allocator,
+    // };
+
+    // try operations.createPatch("Original", null, operation_config);
+    // try operation_config.working_dir.rename("Patch.pwd", "FullPatch.pwd");
+
+    // {
+    //     var target_folder = try cwd.openDir(modified_folder_path, .{});
+    //     defer target_folder.close();
+
+    //     // Modify the target folder a bit.
+    //     {
+    //         var files_to_delete = std.ArrayList([]u8).init(std.testing.allocator);
+    //         defer {
+    //             for (files_to_delete.items) |file| {
+    //                 std.testing.allocator.free(file);
+    //             }
+    //             defer files_to_delete.deinit();
+    //         }
+
+    //         var directories_to_delete = std.ArrayList([]u8).init(std.testing.allocator);
+    //         defer directories_to_delete.deinit();
+
+    //         const Operations = struct {
+    //             const Self = @This();
+    //             const OperationFileTypes = enum { None, Delete, Modify, Create };
+
+    //             files_to_delete: std.ArrayList([]u8),
+    //             directories_to_delete: std.ArrayList([]u8),
+    //             files_to_modify: std.ArrayList([]u8),
+    //             file_to_create: std.ArrayList([]u8),
+
+    //             allocator: std.mem.Allocator,
+
+    //             pub fn init(allocator: std.mem.Allocator) !*Self {
+    //                 var ops = try allocator.create(Self);
+    //                 ops.allocator = allocator;
+    //                 ops.files_to_delete = std.ArrayList([]u8).init(allocator);
+    //                 ops.directories_to_delete = std.ArrayList([]u8).init(allocator);
+    //                 ops.files_to_modify = std.ArrayList([]u8).init(allocator);
+    //                 ops.file_to_create = std.ArrayList([]u8).init(allocator);
+    //                 return ops;
+    //             }
+
+    //             pub fn deinit(ops: *Self) void {
+    //                 ops.files_to_delete.deinit();
+    //                 ops.directories_to_delete.deinit();
+    //                 ops.files_to_modify.deinit();
+    //                 ops.file_to_create.deinit();
+    //                 ops.allocator.destroy(ops);
+    //             }
+    //         };
+
+    //         var ops = try Operations.init(std.testing.allocator);
+    //         defer {
+    //             for (ops.directories_to_delete.items) |dir| {
+    //                 ops.allocator.free(dir);
+    //             }
+
+    //             for (ops.file_to_create.items) |file| {
+    //                 ops.allocator.free(file);
+    //             }
+
+    //             for (ops.files_to_delete.items) |file| {
+    //                 ops.allocator.free(file);
+    //             }
+
+    //             for (ops.files_to_modify.items) |file| {
+    //                 ops.allocator.free(file);
+    //             }
+
+    //             ops.deinit();
+    //         }
+
+    //         const DetermineFileOperations = struct {
+    //             fn findOperationsForDirectory(dir: std.fs.Dir, rand: std.rand.Random, operations_collection: *Operations) !void {
+    //                 var iteratable_dir = try dir.makeOpenPathIterable("", .{});
+    //                 defer iteratable_dir.close();
+
+    //                 var dir_iterator = iteratable_dir.iterate();
+
+    //                 var full_dir_path = try dir.realpathAlloc(std.testing.allocator, "");
+    //                 defer std.testing.allocator.free(full_dir_path);
+
+    //                 while (try dir_iterator.next()) |entry| {
+    //                     switch (entry.kind) {
+    //                         .File => {
+    //                             var file_operation_idx = @intToEnum(Operations.OperationFileTypes, rand.intRangeAtMost(u8, 0, 5));
+
+    //                             switch (file_operation_idx) {
+    //                                 .Delete => {
+    //                                     var full_file_name = try dir.realpathAlloc(std.testing.allocator, entry.name);
+    //                                     try operations_collection.files_to_delete.append(full_file_name);
+    //                                 },
+    //                                 .Create => {
+    //                                     var path_buffer: [16]u8 = undefined;
+    //                                     GeneratePathName(rand, &path_buffer);
+
+    //                                     var full_file_name = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ full_dir_path, &path_buffer });
+    //                                     try operations_collection.file_to_create.append(full_file_name);
+    //                                 },
+    //                                 .Modify => {
+    //                                     var full_file_name = try dir.realpathAlloc(std.testing.allocator, entry.name);
+    //                                     try operations_collection.files_to_modify.append(full_file_name);
+    //                                 },
+    //                                 else => {},
+    //                             }
+    //                         },
+    //                         .Directory => {
+    //                             if (rand.float(f32) > 0.8) {
+    //                                 var full_file_name = try dir.realpathAlloc(std.testing.allocator, entry.name);
+    //                                 try operations_collection.directories_to_delete.append(full_file_name);
+    //                             }
+
+    //                             var opened_dir = try dir.openDir(entry.name, .{});
+    //                             defer opened_dir.close();
+    //                             try findOperationsForDirectory(opened_dir, rand, operations_collection);
+    //                         },
+    //                         else => {},
+    //                     }
+    //                 }
+    //             }
+    //         };
+
+    //         try DetermineFileOperations.findOperationsForDirectory(target_folder, random, ops);
+
+    //         for (ops.files_to_delete.items) |file| {
+    //             std.fs.deleteFileAbsolute(file) catch |e| {
+    //                 switch (e) {
+    //                     else => {},
+    //                 }
+    //             };
+    //         }
+
+    //         for (ops.file_to_create.items) |file| {
+    //             var created_file = try std.fs.createFileAbsolute(file, .{});
+    //             defer created_file.close();
+
+    //             var file_size = random.intRangeAtMost(usize, 0, 64 * 256);
+    //             try generateFile(random, created_file, file_size);
+    //         }
+
+    //         for (ops.files_to_modify.items) |file| {
+    //             var file_to_modify = try std.fs.openFileAbsolute(file, .{ .mode = .read_write });
+    //             defer file_to_modify.close();
+
+    //             var end_pos = try file_to_modify.getEndPos();
+
+    //             var file_size = @intCast(isize, end_pos) + random.intRangeAtMost(isize, -1000, 5000);
+
+    //             if (file_size < 0) {
+    //                 try file_to_modify.setEndPos(0);
+    //             } else {
+    //                 try generateFile(random, file_to_modify, @intCast(usize, file_size));
+    //                 try file_to_modify.setEndPos(@intCast(usize, file_size));
+    //             }
+    //         }
+
+    //         for (ops.directories_to_delete.items) |directory| {
+    //             std.fs.deleteTreeAbsolute(directory) catch |e| {
+    //                 switch (e) {
+    //                     else => {},
+    //                 }
+    //             };
+    //         }
+    //     }
+    // }
+
+    // try operations.createPatch("Modified", "FullPatch.pwd", operation_config);
+    // try operation_config.working_dir.rename("Patch.pwd", "PatchToModified.pwd");
+
+    // try operations.applyPatch("PatchToModified.pwd", "Patched", operation_config);
+
+    // // std.fs.deleteTreeAbsolute()
 }

@@ -125,7 +125,7 @@ const ApplyPatchTask = struct {
     }
 };
 
-pub fn applyPatch(target_dir: std.fs.Dir, patch_file_path: []const u8, patch: *PatchHeader, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
+pub fn applyPatch(working_dir: std.fs.Dir, target_dir: std.fs.Dir, patch_file_path: []const u8, patch: *PatchHeader, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
     var per_thread_operations_buffer = try allocator.alloc([]u8, thread_pool.max_threads);
     defer allocator.free(per_thread_operations_buffer);
 
@@ -143,7 +143,7 @@ pub fn applyPatch(target_dir: std.fs.Dir, patch_file_path: []const u8, patch: *P
     defer allocator.free(per_thread_patch_files);
 
     for (per_thread_patch_files) |*per_thread_patch_file| {
-        per_thread_patch_file.* = try std.fs.cwd().openFile(patch_file_path, .{});
+        per_thread_patch_file.* = try working_dir.openFile(patch_file_path, .{});
     }
 
     defer {
