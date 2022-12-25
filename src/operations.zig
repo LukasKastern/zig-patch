@@ -162,7 +162,7 @@ fn findPatchStagingDir(cwd: std.fs.Dir) !std.fs.Dir {
     return error.NoSuitableStagingPathFound;
 }
 
-pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const u8, config: OperationConfig) !void {
+pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const u8, config: OperationConfig) !void {
     var allocator = config.allocator;
     var thread_pool = config.thread_pool;
     var cwd: std.fs.Dir = config.working_dir;
@@ -184,19 +184,11 @@ pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const
         }
     }
 
-    var previous_patch_header: ?*PatchHeader = null;
-    defer {
-        if (previous_patch_header) |patch_header_unwrapped| {
-            patch_header_unwrapped.old.deinit();
-            patch_header_unwrapped.deinit();
-        }
-    }
-
-    if (previous_patch_path == null) {
-        std.log.warn("{s}\n\n", .{"No previous patch specified. A full patch will be generated. Specify a previous patch using --previous_patch <path>"});
+    if (previous_signature == null) {
+        std.log.warn("{s}\n\n", .{"No previous signature specified. A full patch will be generated. Specify a previous signature using --previous_signature <path>"});
         prev_signature_file = try SignatureFile.init(allocator);
     } else {
-        var out_file = try cwd.openFile(previous_patch_path.?, .{});
+        var out_file = try cwd.openFile(previous_signature.?, .{});
         defer out_file.close();
 
         const BufferedFileReader = std.io.BufferedReader(1200, std.fs.File.Reader);
@@ -205,16 +197,14 @@ pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const
         };
         var reader = buffered_file_reader.reader();
 
-        previous_patch_header = PatchHeader.loadPatchHeader(allocator, reader) catch |e| {
+        prev_signature_file = SignatureFile.loadSignature(reader, allocator) catch |e| {
             switch (e) {
                 else => {
-                    std.log.err("Failed to load previous signature file at path {s}, error={}", .{ previous_patch_path.?, e });
+                    std.log.err("Failed to load previous signature file at path {s}, error={}", .{ previous_signature.?, e });
                     return error.ReferenceSignatureLoadFailed;
                 },
             }
         };
-
-        prev_signature_file = previous_patch_header.?.new;
 
         var post_signature_load_time = timer.read();
         std.log.info("Loaded Previous Signature in {d:2}ms", .{(@intToFloat(f64, post_signature_load_time) - @intToFloat(f64, start_sample)) / 1000000});
@@ -259,4 +249,26 @@ pub fn createPatch(source_folder_path: []const u8, previous_patch_path: ?[]const
 
     try std.fs.deleteTreeAbsolute(staging_dir_path);
     std.log.info("The patch was generated successfully", .{});
+}
+
+pub fn make_signature(folder_to_make_signature_of: []const u8, output_path: []const u8, config: OperationConfig) !void {
+    var signature_file = try SignatureFile.init(config.allocator);
+    defer signature_file.deinit();
+
+    var target_dir = try config.working_dir.openDir(folder_to_make_signature_of, .{});
+    defer target_dir.close();
+
+    var file = try config.working_dir.createFile(output_path, .{});
+    defer file.close();
+
+    try signature_file.generateFromFolder(target_dir, config.thread_pool);
+
+    const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
+    var buffered_file_writer: BufferedFileWriter = .{
+        .unbuffered_writer = file.writer(),
+    };
+
+    var writer = buffered_file_writer.writer();
+
+    try signature_file.saveSignature(writer);
 }

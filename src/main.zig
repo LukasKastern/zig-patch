@@ -38,6 +38,7 @@ fn show_main_help() noreturn {
         \\
         \\ ./wharf-zig create 
         \\ ./wharf-zig apply 
+        \\ ./wharf-zig make_signature
         \\
         \\
     });
@@ -47,6 +48,7 @@ fn show_main_help() noreturn {
 const CommandLineCommand = enum {
     create,
     apply,
+    make_signature,
     help,
 };
 
@@ -55,8 +57,8 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
 
     const params = comptime clap.parseParamsComptime(
         \\-h, --help                     Display this help message.
-        \\-f, --folder <str>             Name of the folder to create the diff from.
-        \\-p, --previous_patch <str>     Name of the previous patch from which the diff will be created.
+        \\-f, --source_folder <str>      Path to the folder to create the diff from.
+        \\-s, --signature_file <str>     Signature file to which the Patch will be created.
         \\
     );
 
@@ -78,15 +80,15 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         return;
     }
 
-    var folder = parsed_args.args.folder;
-    var previous_patch = parsed_args.args.previous_patch;
+    var folder = parsed_args.args.source_folder;
+    var previous_signature = parsed_args.args.signature_file;
 
     if (folder == null) {
-        std.log.err("{s}\n\n", .{"Create needs to know which folder to create the patch from, specify the folder using --folder <path> "});
+        std.log.err("{s}\n\n", .{"Create needs to know which folder to create the patch from, specify the folder using --source_folder <path> "});
         return;
     }
 
-    try operations.createPatch(folder.?, previous_patch, .{
+    try operations.createPatch(folder.?, previous_signature, .{
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,
@@ -99,8 +101,7 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
     const params = comptime clap.parseParamsComptime(
         \\-h, --help                     Display this help message.
         \\-p, --patch <str>              Path to the patch that should be applied.
-        \\-s, --source_folder <str>      Path of the previous build that the patch will be applied to.
-        \\-t, --target_folder <str>      Path to the folder where the patched build will be stored.
+        \\-t, --target_folder <str>      Path to the folder to patch.
     );
 
     var diag: clap.Diagnostic = undefined;
@@ -132,7 +133,54 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
         return;
     }
 
-    try operations.applyPatch(parsed_args.args.patch.?, parsed_args.args.source_folder, parsed_args.args.target_folder.?, .{
+    try operations.applyPatch(parsed_args.args.patch.?, parsed_args.args.target_folder.?, .{
+        .working_dir = std.fs.cwd(),
+        .thread_pool = thread_pool,
+        .allocator = allocator,
+    });
+}
+
+fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
+    const summary =
+        \\Makes a signature file from a folder.
+        \\Patches use signature files as a base/previous version to which the diff will be calculated.
+    ;
+
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help                     Display this help message.
+        \\-t, --source_folder <str>      Path of the folder to create the signature file from.
+        \\-o, --output_file <str>        Output path of the generated file.
+    );
+
+    var diag: clap.Diagnostic = undefined;
+    var parsed_args = clap.parseEx(clap.Help, &params, clap.parsers.default, args_it, .{
+        .allocator = allocator,
+        .diagnostic = &diag,
+    }) catch |err| {
+        // Report any useful error and exit
+        diag.report(std.io.getStdErr().writer(), err) catch {};
+        return err;
+    };
+
+    if (parsed_args.args.help) {
+        std.debug.print("{s}\n\n", .{summary});
+        clap.help(std.io.getStdErr().writer(), clap.Help, &params, .{}) catch {};
+        std.debug.print("\n", .{});
+        std.os.exit(0);
+        return;
+    }
+
+    if (parsed_args.args.source_folder == null) {
+        std.log.err("No --source_folder <str> passed to make_signature. Please specify it to tell wharf-zig what folder to create the signature from.", .{});
+        return;
+    }
+
+    if (parsed_args.args.output_file == null) {
+        std.log.err("No --output_file <str> passed to make_signature. Please specify it to tell wharf-zig where to place the resulting signature file.", .{});
+        return;
+    }
+
+    try operations.make_signature(parsed_args.args.source_folder.?, parsed_args.args.output_file.?, .{
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,
@@ -163,6 +211,9 @@ pub fn main() !void {
         },
         .apply => {
             try apply(&args_it, &thread_pool, allocator);
+        },
+        .make_signature => {
+            try make_signature(&args_it, &thread_pool, allocator);
         },
         .help => {
             show_main_help();
