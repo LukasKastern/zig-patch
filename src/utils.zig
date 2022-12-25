@@ -19,9 +19,11 @@ pub fn copyFolder(dst: std.fs.Dir, src: std.fs.Dir) !void {
 
         var nested_directory_full_name = try directory.realpath("", &directory_name_buffer);
 
+        var is_root_dir = std.mem.eql(u8, src_full_path, nested_directory_full_name);
+
         defer {
             // We don't want to close the src directory
-            if (!std.mem.eql(u8, src_full_path, nested_directory_full_name)) {
+            if (!is_root_dir) {
                 directory.close();
             }
         }
@@ -31,8 +33,15 @@ pub fn copyFolder(dst: std.fs.Dir, src: std.fs.Dir) !void {
         var rel_dir_path = try std.fs.path.relative(relative_name_allocator.allocator(), src_full_path, nested_directory_full_name);
 
         if (rel_dir_path.len > 0) {
-            std.debug.print("Making dst path {s}", .{rel_dir_path});
             try dst.makePath(rel_dir_path);
+        }
+
+        var current_dst_dir: std.fs.Dir = if (is_root_dir) dst else try dst.openDir(rel_dir_path, .{});
+
+        defer {
+            if (!is_root_dir) {
+                current_dst_dir.close();
+            }
         }
 
         var iteratable_dir = try directory.makeOpenPathIterable("", .{});
@@ -43,7 +52,7 @@ pub fn copyFolder(dst: std.fs.Dir, src: std.fs.Dir) !void {
         while (try dir_iterator.next()) |entry| {
             switch (entry.kind) {
                 .File => {
-                    // directory.copyFile()
+                    try directory.copyFile(entry.name, current_dst_dir, entry.name, .{});
                 },
                 .Directory => {
                     var nested_dir = try directory.openDir(entry.name, .{});

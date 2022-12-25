@@ -25,7 +25,7 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
         switch (e) {
             else => {
                 std.log.err("Failed to open patch file, error => {}", .{e});
-                return;
+                return error.FailedToOpenPatchFile;
             },
         }
     };
@@ -38,7 +38,7 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
         switch (e) {
             else => {
                 std.log.err("Failed to deserialize patch file, error => {}", .{e});
-                return;
+                return error.FailedToLoadPatchHeader;
             },
         }
     };
@@ -102,7 +102,6 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
 
     if (source_folder) |*source_folder_unwrapped| {
         // If we already have a folder at the source path we back it up.
-        // source_folder_unwrapped.rename()
 
         source_folder_unwrapped.close();
         source_folder = null;
@@ -251,7 +250,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
     std.log.info("The patch was generated successfully", .{});
 }
 
-pub fn make_signature(folder_to_make_signature_of: []const u8, output_path: []const u8, config: OperationConfig) !void {
+pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []const u8, config: OperationConfig) !void {
     var signature_file = try SignatureFile.init(config.allocator);
     defer signature_file.deinit();
 
@@ -271,4 +270,5 @@ pub fn make_signature(folder_to_make_signature_of: []const u8, output_path: []co
     var writer = buffered_file_writer.writer();
 
     try signature_file.saveSignature(writer);
+    try buffered_file_writer.flush();
 }

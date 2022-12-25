@@ -180,7 +180,7 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
         return;
     }
 
-    try operations.make_signature(parsed_args.args.source_folder.?, parsed_args.args.output_file.?, .{
+    try operations.makeSignature(parsed_args.args.source_folder.?, parsed_args.args.output_file.?, .{
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,

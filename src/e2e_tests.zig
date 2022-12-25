@@ -153,6 +153,7 @@ fn areDirectoriesEqual(lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *T
         }
 
         if (lhs_file.size != rhs_file.size) {
+            std.debug.print("File {s} expected size of {} but is {}\n", .{ lhs_file.name, lhs_file.size, rhs_file.size });
             return false;
         }
     }
@@ -254,228 +255,234 @@ test "Full patch should match source folder" {
 // Delete folders/files from one - regenerate patch with first patch as a reference.
 // Apply patch and check that both folders are the same.
 test "Patch should delete/create files and folders" {
-    return error.SkipZigTest;
-    // var prng = std.rand.DefaultPrng.init(14123);
-    // var random = prng.random();
+    var prng = std.rand.DefaultPrng.init(14123);
+    var random = prng.random();
 
-    // const cwd = std.fs.cwd();
-    // const TestRootPath = "temp/DeleteAndCreateContent";
-    // cwd.makeDir("temp") catch |err| {
-    //     switch (err) {
-    //         error.PathAlreadyExists => {},
-    //         else => {
-    //             return error.CouldntCreateTemp;
-    //         },
-    //     }
-    // };
+    const cwd = std.fs.cwd();
+    const TestRootPath = "temp/DeleteAndCreateContent";
+    cwd.makeDir("temp") catch |err| {
+        switch (err) {
+            error.PathAlreadyExists => {},
+            else => {
+                return error.CouldntCreateTemp;
+            },
+        }
+    };
 
-    // try cwd.deleteTree(TestRootPath);
-    // try cwd.makeDir(TestRootPath);
-    // var test_root_dir = try cwd.openDir(TestRootPath, .{});
-    // defer test_root_dir.close();
+    try cwd.deleteTree(TestRootPath);
+    try cwd.makeDir(TestRootPath);
+    var test_root_dir = try cwd.openDir(TestRootPath, .{});
+    defer test_root_dir.close();
 
-    // var patched_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
-    // defer std.testing.allocator.free(patched_folder_path);
+    var original_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    defer std.testing.allocator.free(original_folder_path);
 
-    // var modified_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Modified" });
-    // defer std.testing.allocator.free(modified_folder_path);
+    var modified_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Modified" });
+    defer std.testing.allocator.free(modified_folder_path);
 
-    // // Create the source folder
-    // {
-    //     try cwd.makeDir(patched_folder_path);
-    //     var src_folder = try cwd.openDir(patched_folder_path, .{});
-    //     defer src_folder.close();
+    // Create the source folder
+    {
+        try cwd.makeDir(original_folder_path);
+        var src_folder = try cwd.openDir(original_folder_path, .{});
+        defer src_folder.close();
 
-    //     try generateTestFolder(12587, src_folder, .{ .min_depth = 2, .max_depth = 3 });
-    // }
+        try generateTestFolder(12587, src_folder, .{ .min_depth = 2, .max_depth = 3 });
+    }
 
-    // // Create the target folder
-    // {
-    //     try cwd.makeDir(modified_folder_path);
-    //     var target_folder = try cwd.openDir(modified_folder_path, .{});
-    //     defer target_folder.close();
+    // Create the modified folder
+    {
+        try cwd.makeDir(modified_folder_path);
+        var modified_folder = try cwd.openDir(modified_folder_path, .{});
+        defer modified_folder.close();
 
-    //     try generateTestFolder(12587, target_folder, .{ .min_depth = 2, .max_depth = 3 });
-    // }
+        try generateTestFolder(12587, modified_folder, .{ .min_depth = 2, .max_depth = 3 });
+    }
 
-    // var thread_pool = ThreadPool.init(.{ .max_threads = 1 });
-    // thread_pool.spawnThreads();
+    var thread_pool = ThreadPool.init(.{ .max_threads = 1 });
+    thread_pool.spawnThreads();
 
-    // var operation_config: operations.OperationConfig = .{
-    //     .working_dir = test_root_dir,
-    //     .thread_pool = &thread_pool,
-    //     .allocator = std.testing.allocator,
-    // };
+    var operation_config: operations.OperationConfig = .{
+        .working_dir = test_root_dir,
+        .thread_pool = &thread_pool,
+        .allocator = std.testing.allocator,
+    };
 
-    // try operations.createPatch("Original", null, operation_config);
-    // try operation_config.working_dir.rename("Patch.pwd", "FullPatch.pwd");
+    try operations.makeSignature("Original", "OriginalSignature", operation_config);
 
-    // {
-    //     var target_folder = try cwd.openDir(modified_folder_path, .{});
-    //     defer target_folder.close();
+    {
+        var modified_folder = try cwd.openDir(modified_folder_path, .{});
+        defer modified_folder.close();
 
-    //     // Modify the target folder a bit.
-    //     {
-    //         var files_to_delete = std.ArrayList([]u8).init(std.testing.allocator);
-    //         defer {
-    //             for (files_to_delete.items) |file| {
-    //                 std.testing.allocator.free(file);
-    //             }
-    //             defer files_to_delete.deinit();
-    //         }
+        // Modify the target folder a bit.
+        {
+            var files_to_delete = std.ArrayList([]u8).init(std.testing.allocator);
+            defer {
+                for (files_to_delete.items) |file| {
+                    std.testing.allocator.free(file);
+                }
+                defer files_to_delete.deinit();
+            }
 
-    //         var directories_to_delete = std.ArrayList([]u8).init(std.testing.allocator);
-    //         defer directories_to_delete.deinit();
+            var directories_to_delete = std.ArrayList([]u8).init(std.testing.allocator);
+            defer directories_to_delete.deinit();
 
-    //         const Operations = struct {
-    //             const Self = @This();
-    //             const OperationFileTypes = enum { None, Delete, Modify, Create };
+            const Operations = struct {
+                const Self = @This();
+                const OperationFileTypes = enum { None, Delete, Modify, Create };
 
-    //             files_to_delete: std.ArrayList([]u8),
-    //             directories_to_delete: std.ArrayList([]u8),
-    //             files_to_modify: std.ArrayList([]u8),
-    //             file_to_create: std.ArrayList([]u8),
+                files_to_delete: std.ArrayList([]u8),
+                directories_to_delete: std.ArrayList([]u8),
+                files_to_modify: std.ArrayList([]u8),
+                file_to_create: std.ArrayList([]u8),
 
-    //             allocator: std.mem.Allocator,
+                allocator: std.mem.Allocator,
 
-    //             pub fn init(allocator: std.mem.Allocator) !*Self {
-    //                 var ops = try allocator.create(Self);
-    //                 ops.allocator = allocator;
-    //                 ops.files_to_delete = std.ArrayList([]u8).init(allocator);
-    //                 ops.directories_to_delete = std.ArrayList([]u8).init(allocator);
-    //                 ops.files_to_modify = std.ArrayList([]u8).init(allocator);
-    //                 ops.file_to_create = std.ArrayList([]u8).init(allocator);
-    //                 return ops;
-    //             }
+                pub fn init(allocator: std.mem.Allocator) !*Self {
+                    var ops = try allocator.create(Self);
+                    ops.allocator = allocator;
+                    ops.files_to_delete = std.ArrayList([]u8).init(allocator);
+                    ops.directories_to_delete = std.ArrayList([]u8).init(allocator);
+                    ops.files_to_modify = std.ArrayList([]u8).init(allocator);
+                    ops.file_to_create = std.ArrayList([]u8).init(allocator);
+                    return ops;
+                }
 
-    //             pub fn deinit(ops: *Self) void {
-    //                 ops.files_to_delete.deinit();
-    //                 ops.directories_to_delete.deinit();
-    //                 ops.files_to_modify.deinit();
-    //                 ops.file_to_create.deinit();
-    //                 ops.allocator.destroy(ops);
-    //             }
-    //         };
+                pub fn deinit(ops: *Self) void {
+                    ops.files_to_delete.deinit();
+                    ops.directories_to_delete.deinit();
+                    ops.files_to_modify.deinit();
+                    ops.file_to_create.deinit();
+                    ops.allocator.destroy(ops);
+                }
+            };
 
-    //         var ops = try Operations.init(std.testing.allocator);
-    //         defer {
-    //             for (ops.directories_to_delete.items) |dir| {
-    //                 ops.allocator.free(dir);
-    //             }
+            var ops = try Operations.init(std.testing.allocator);
+            defer {
+                for (ops.directories_to_delete.items) |dir| {
+                    ops.allocator.free(dir);
+                }
 
-    //             for (ops.file_to_create.items) |file| {
-    //                 ops.allocator.free(file);
-    //             }
+                for (ops.file_to_create.items) |file| {
+                    ops.allocator.free(file);
+                }
 
-    //             for (ops.files_to_delete.items) |file| {
-    //                 ops.allocator.free(file);
-    //             }
+                for (ops.files_to_delete.items) |file| {
+                    ops.allocator.free(file);
+                }
 
-    //             for (ops.files_to_modify.items) |file| {
-    //                 ops.allocator.free(file);
-    //             }
+                for (ops.files_to_modify.items) |file| {
+                    ops.allocator.free(file);
+                }
 
-    //             ops.deinit();
-    //         }
+                ops.deinit();
+            }
 
-    //         const DetermineFileOperations = struct {
-    //             fn findOperationsForDirectory(dir: std.fs.Dir, rand: std.rand.Random, operations_collection: *Operations) !void {
-    //                 var iteratable_dir = try dir.makeOpenPathIterable("", .{});
-    //                 defer iteratable_dir.close();
+            const DetermineFileOperations = struct {
+                fn findOperationsForDirectory(dir: std.fs.Dir, rand: std.rand.Random, operations_collection: *Operations) !void {
+                    var iteratable_dir = try dir.makeOpenPathIterable("", .{});
+                    defer iteratable_dir.close();
 
-    //                 var dir_iterator = iteratable_dir.iterate();
+                    var dir_iterator = iteratable_dir.iterate();
 
-    //                 var full_dir_path = try dir.realpathAlloc(std.testing.allocator, "");
-    //                 defer std.testing.allocator.free(full_dir_path);
+                    var full_dir_path = try dir.realpathAlloc(std.testing.allocator, "");
+                    defer std.testing.allocator.free(full_dir_path);
 
-    //                 while (try dir_iterator.next()) |entry| {
-    //                     switch (entry.kind) {
-    //                         .File => {
-    //                             var file_operation_idx = @intToEnum(Operations.OperationFileTypes, rand.intRangeAtMost(u8, 0, 5));
+                    while (try dir_iterator.next()) |entry| {
+                        switch (entry.kind) {
+                            .File => {
+                                var file_operation_idx = @intToEnum(Operations.OperationFileTypes, rand.intRangeAtMost(u8, 0, 5));
 
-    //                             switch (file_operation_idx) {
-    //                                 .Delete => {
-    //                                     var full_file_name = try dir.realpathAlloc(std.testing.allocator, entry.name);
-    //                                     try operations_collection.files_to_delete.append(full_file_name);
-    //                                 },
-    //                                 .Create => {
-    //                                     var path_buffer: [16]u8 = undefined;
-    //                                     GeneratePathName(rand, &path_buffer);
+                                switch (file_operation_idx) {
+                                    .Delete => {
+                                        var full_file_name = try dir.realpathAlloc(std.testing.allocator, entry.name);
+                                        try operations_collection.files_to_delete.append(full_file_name);
+                                    },
+                                    .Create => {
+                                        var path_buffer: [16]u8 = undefined;
+                                        GeneratePathName(rand, &path_buffer);
 
-    //                                     var full_file_name = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ full_dir_path, &path_buffer });
-    //                                     try operations_collection.file_to_create.append(full_file_name);
-    //                                 },
-    //                                 .Modify => {
-    //                                     var full_file_name = try dir.realpathAlloc(std.testing.allocator, entry.name);
-    //                                     try operations_collection.files_to_modify.append(full_file_name);
-    //                                 },
-    //                                 else => {},
-    //                             }
-    //                         },
-    //                         .Directory => {
-    //                             if (rand.float(f32) > 0.8) {
-    //                                 var full_file_name = try dir.realpathAlloc(std.testing.allocator, entry.name);
-    //                                 try operations_collection.directories_to_delete.append(full_file_name);
-    //                             }
+                                        var full_file_name = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ full_dir_path, &path_buffer });
+                                        try operations_collection.file_to_create.append(full_file_name);
+                                    },
+                                    .Modify => {
+                                        var full_file_name = try dir.realpathAlloc(std.testing.allocator, entry.name);
+                                        try operations_collection.files_to_modify.append(full_file_name);
+                                    },
+                                    else => {},
+                                }
+                            },
+                            .Directory => {
+                                if (rand.float(f32) > 0.8) {
+                                    var full_file_name = try dir.realpathAlloc(std.testing.allocator, entry.name);
+                                    try operations_collection.directories_to_delete.append(full_file_name);
+                                }
 
-    //                             var opened_dir = try dir.openDir(entry.name, .{});
-    //                             defer opened_dir.close();
-    //                             try findOperationsForDirectory(opened_dir, rand, operations_collection);
-    //                         },
-    //                         else => {},
-    //                     }
-    //                 }
-    //             }
-    //         };
+                                var opened_dir = try dir.openDir(entry.name, .{});
+                                defer opened_dir.close();
+                                try findOperationsForDirectory(opened_dir, rand, operations_collection);
+                            },
+                            else => {},
+                        }
+                    }
+                }
+            };
 
-    //         try DetermineFileOperations.findOperationsForDirectory(target_folder, random, ops);
+            try DetermineFileOperations.findOperationsForDirectory(modified_folder, random, ops);
 
-    //         for (ops.files_to_delete.items) |file| {
-    //             std.fs.deleteFileAbsolute(file) catch |e| {
-    //                 switch (e) {
-    //                     else => {},
-    //                 }
-    //             };
-    //         }
+            for (ops.files_to_delete.items) |file| {
+                std.fs.deleteFileAbsolute(file) catch |e| {
+                    switch (e) {
+                        else => {},
+                    }
+                };
+            }
 
-    //         for (ops.file_to_create.items) |file| {
-    //             var created_file = try std.fs.createFileAbsolute(file, .{});
-    //             defer created_file.close();
+            for (ops.file_to_create.items) |file| {
+                var created_file = try std.fs.createFileAbsolute(file, .{});
+                defer created_file.close();
 
-    //             var file_size = random.intRangeAtMost(usize, 0, 64 * 256);
-    //             try generateFile(random, created_file, file_size);
-    //         }
+                var file_size = random.intRangeAtMost(usize, 0, 64 * 256);
+                try generateFile(random, created_file, file_size);
+            }
 
-    //         for (ops.files_to_modify.items) |file| {
-    //             var file_to_modify = try std.fs.openFileAbsolute(file, .{ .mode = .read_write });
-    //             defer file_to_modify.close();
+            for (ops.files_to_modify.items) |file| {
+                var file_to_modify = try std.fs.openFileAbsolute(file, .{ .mode = .read_write });
+                defer file_to_modify.close();
 
-    //             var end_pos = try file_to_modify.getEndPos();
+                var end_pos = try file_to_modify.getEndPos();
 
-    //             var file_size = @intCast(isize, end_pos) + random.intRangeAtMost(isize, -1000, 5000);
+                var file_size = @intCast(isize, end_pos) + random.intRangeAtMost(isize, -1000, 5000);
 
-    //             if (file_size < 0) {
-    //                 try file_to_modify.setEndPos(0);
-    //             } else {
-    //                 try generateFile(random, file_to_modify, @intCast(usize, file_size));
-    //                 try file_to_modify.setEndPos(@intCast(usize, file_size));
-    //             }
-    //         }
+                if (file_size < 0) {
+                    try file_to_modify.setEndPos(0);
+                } else {
+                    try generateFile(random, file_to_modify, @intCast(usize, file_size));
+                    try file_to_modify.setEndPos(@intCast(usize, file_size));
+                }
+            }
 
-    //         for (ops.directories_to_delete.items) |directory| {
-    //             std.fs.deleteTreeAbsolute(directory) catch |e| {
-    //                 switch (e) {
-    //                     else => {},
-    //                 }
-    //             };
-    //         }
-    //     }
-    // }
+            for (ops.directories_to_delete.items) |directory| {
+                std.fs.deleteTreeAbsolute(directory) catch |e| {
+                    switch (e) {
+                        else => {},
+                    }
+                };
+            }
+        }
+    }
 
-    // try operations.createPatch("Modified", "FullPatch.pwd", operation_config);
-    // try operation_config.working_dir.rename("Patch.pwd", "PatchToModified.pwd");
+    try operations.createPatch("Modified", "OriginalSignature", operation_config);
+    try operation_config.working_dir.rename("Patch.pwd", "PatchToModified.pwd");
 
-    // try operations.applyPatch("PatchToModified.pwd", "Patched", operation_config);
+    try operations.applyPatch("PatchToModified.pwd", "Original", operation_config);
 
-    // // std.fs.deleteTreeAbsolute()
+    {
+        var src_folder = try cwd.openDir(original_folder_path, .{});
+        defer src_folder.close();
+
+        var target_folder = try cwd.openDir(modified_folder_path, .{});
+        defer target_folder.close();
+
+        try std.testing.expect(try areDirectoriesEqual(src_folder, target_folder, &thread_pool, std.testing.allocator));
+    }
 }

@@ -208,6 +208,8 @@ pub const SignatureFile = struct {
 
     fn generateFromFolderImpl(self: *SignatureFile, directory: std.fs.Dir, parent_path: []u8) !void {
         var iteratable_dir = try directory.makeOpenPathIterable("", .{});
+        defer iteratable_dir.close();
+
         var iterator = iteratable_dir.iterate();
 
         while (try iterator.next()) |entry| {

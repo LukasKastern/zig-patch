@@ -102,6 +102,7 @@ const ApplyPatchTask = struct {
             .mode = .write_only,
         });
         defer target_file.close();
+        try target_file.setEndPos(self.file.size);
 
         var target_file_writer = target_file.writer();
 
@@ -114,6 +115,8 @@ const ApplyPatchTask = struct {
             for (operations.items) |operation| {
                 if (operation == .Data) {
                     try target_file_writer.writeAll(operation.Data);
+                } else {
+                    return error.NonDataOperationFound;
                 }
             }
         }

@@ -73,8 +73,6 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
     return patch_operations;
 }
 
-pub fn applyOperations() void {}
-
 test "Operations for buffer without Reference should rebuild the original buffer" {
     const max_operation_len: usize = 512;
 
