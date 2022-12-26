@@ -6,6 +6,7 @@ const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
 const MaxDataOperationLength = @import("block_patching.zig").MaxDataOperationLength;
 const PatchHeader = @import("patch_header.zig").PatchHeader;
 const BlockSize = @import("block.zig").BlockSize;
+const Compression = @import("compression/compression.zig").Compression;
 
 const PatchFileInfo = struct {
     file_idx: usize,
@@ -25,7 +26,7 @@ const PatchFileIO = struct {
     read_patch_file: ReadPatchFile,
 };
 
-pub const DefaultMaxWorkUnitSize = BlockSize * 200;
+pub const DefaultMaxWorkUnitSize = BlockSize * 25;
 
 const CreatePatchOptions = struct {
     max_work_unit_size: usize = DefaultMaxWorkUnitSize,
@@ -106,17 +107,36 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         signature_file: *SignatureFile,
         max_work_unit_size: usize,
 
+        per_thread_compression_buffers: [][]u8,
+
         fn write(patch_file_io: *PatchFileIO, patch_data: PatchFileData) error{WritePatchError}!void {
             var self = @fieldParentPtr(@This(), "file_io", patch_file_io);
 
             var file_name_buffer: [128]u8 = undefined;
             var name = std.fmt.bufPrint(&file_name_buffer, "File_{}_Part_{}", .{ patch_data.file_info.file_idx, patch_data.file_info.file_part_idx }) catch return error.WritePatchError;
 
+            var compression_buffer = self.per_thread_compression_buffers[ThreadPool.Thread.current.?.idx];
+            var compression_fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(compression_buffer);
+
+            var compression_allocator = compression_fixed_buffer_allocator.allocator();
+            var data = compression_allocator.alloc(u8, self.max_work_unit_size * 2) catch return error.WritePatchError;
+
+            var fixed_buffer_stream = std.io.fixedBufferStream(data[0..]);
+            var fixed_buffer_writer = fixed_buffer_stream.writer();
+
+            BlockPatching.saveOperations(patch_data.operations, fixed_buffer_writer) catch return error.WritePatchError;
+
+            var deflating = Compression.Deflating.init(.Brotli, compression_allocator) catch return error.WritePatchError;
+            defer deflating.deinit();
+
+            var deflated_bufer = compression_allocator.alloc(u8, self.max_work_unit_size + 256) catch return error.WritePatchError;
+
+            var deflated_data = deflating.deflateBuffer(fixed_buffer_stream.buffer[0..fixed_buffer_stream.pos], deflated_bufer) catch return error.WritePatchError;
+
             var fs_file = self.staging_dir.createFile(name, .{}) catch return error.WritePatchError;
             defer fs_file.close();
 
-            var writer = fs_file.writer();
-            BlockPatching.saveOperations(patch_data.operations, writer) catch return error.WritePatchError;
+            fs_file.writeAll(deflated_data) catch return error.WritePatchError;
         }
 
         fn read(patch_file_io: *PatchFileIO, file_info: PatchFileInfo, read_buffer: []u8) error{ReadPatchError}!usize {
@@ -134,6 +154,19 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
 
     var staging_folder = options.staging_dir;
 
+    var per_thread_compression_buffers = try allocator.alloc([]u8, thread_pool.max_threads);
+    defer allocator.free(per_thread_compression_buffers);
+
+    for (per_thread_compression_buffers) |*operations_buffer| {
+        operations_buffer.* = try allocator.alloc(u8, options.max_work_unit_size * 32 + 8096);
+    }
+
+    defer {
+        for (per_thread_compression_buffers) |operations_buffer| {
+            allocator.free(operations_buffer);
+        }
+    }
+
     // zig fmt: off
     var staging_folder_io: PerPatchPartStagingFolderIO = .{ 
         .signature_file = new_signature,
@@ -145,10 +178,14 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         .build_dir = options.build_dir,
         .staging_dir = staging_folder,
         .max_work_unit_size = options.max_work_unit_size,
+        .per_thread_compression_buffers = per_thread_compression_buffers,
     };
     // zig fmt: on
 
+    // To allow better parallization we split files up into batches of MaxWorkUnitSize.
     try createPerFilePatchOperations(thread_pool, new_signature, old_signature, allocator, .{ .patch_file_io = &staging_folder_io.file_io, .create_patch_options = options });
+
+    // Once all the required operations have been generated we assemble the individual operations into one patch file.
     try assemblePatchFromFiles(new_signature, old_signature, staging_folder, allocator, options);
 }
 
@@ -238,9 +275,10 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
             var read_bytes = try fs_part.readAll(read_buffer);
             std.debug.assert(read_bytes == try fs_part.getEndPos());
 
+            try patch.writer().writeIntBig(usize, read_bytes);
             try patch.writeAll(read_buffer[0..read_bytes]);
 
-            offset_in_file += read_bytes;
+            offset_in_file += read_bytes + @sizeOf(usize);
         }
 
         file_idx += 1;

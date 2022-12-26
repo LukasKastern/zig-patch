@@ -166,12 +166,18 @@ pub const SignatureFile = struct {
         var block_idx: usize = 0;
 
         while (block_idx < num_blocks) : (block_idx += 1) {
-            var current_file = self.files.items[file_idx];
-
-            if (block_idx_in_file * BlockSize > current_file.size) {
+            if (block_idx_in_file * BlockSize > self.files.items[file_idx].size) {
                 file_idx += 1;
                 block_idx_in_file = 0;
             }
+
+            while (self.files.items[file_idx].size == 0) {
+                file_idx += 1;
+            }
+
+            var current_file = self.files.items[file_idx];
+
+            std.debug.assert(current_file.size > 0);
 
             tasks[block_idx] = CalculateHashData{
                 .task = ThreadPool.Task{ .callback = CalculateHashData.calculate_hash },

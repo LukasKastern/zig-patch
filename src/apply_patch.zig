@@ -8,6 +8,7 @@ const BlockPatching = @import("block_patching.zig");
 const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
 const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
 const BlockSize = @import("block.zig").BlockSize;
+const Compression = @import("compression/compression.zig").Compression;
 
 pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
     const old_signature = patch.old;
@@ -115,8 +116,28 @@ const ApplyPatchTask = struct {
         var patch_section_idx: usize = 0;
         while (patch_section_idx < num_patch_sections) : (patch_section_idx += 1) {
             fixed_buffer_allocator.reset();
+
             var operations_allocator = fixed_buffer_allocator.allocator();
-            var operations = try BlockPatching.loadOperations(operations_allocator, file_reader);
+            var compressed_section_size = try file_reader.readIntBig(usize);
+
+            if (compressed_section_size > (PatchGeneration.DefaultMaxWorkUnitSize + 256)) {
+                return error.CompressedSectionIsLargerThanMaxSize;
+            }
+
+            var compressed_data_buffer = try operations_allocator.alloc(u8, compressed_section_size);
+            try file_reader.readNoEof(compressed_data_buffer);
+
+            var inflating = try Compression.Infalting.init(.Brotli, operations_allocator);
+            defer inflating.deinit();
+
+            var inflated_buffer = try operations_allocator.alloc(u8, PatchGeneration.DefaultMaxWorkUnitSize + 256);
+
+            try inflating.inflateBuffer(compressed_data_buffer, inflated_buffer);
+
+            var inflated_buffer_stream = std.io.fixedBufferStream(inflated_buffer);
+            var inflated_reader = inflated_buffer_stream.reader();
+
+            var operations = try BlockPatching.loadOperations(operations_allocator, inflated_reader);
 
             for (operations.items) |operation| {
                 if (operation == .Data) {
@@ -153,7 +174,7 @@ pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: 
     defer allocator.free(per_thread_operations_buffer);
 
     for (per_thread_operations_buffer) |*operations_buffer| {
-        operations_buffer.* = try allocator.alloc(u8, PatchGeneration.DefaultMaxWorkUnitSize + 8096);
+        operations_buffer.* = try allocator.alloc(u8, PatchGeneration.DefaultMaxWorkUnitSize * 6 + 8096);
     }
 
     defer {

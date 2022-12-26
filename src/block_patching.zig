@@ -46,8 +46,6 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
 
         var known_block: ?AnchoredBlock = null;
 
-        if (head == 0) {}
-
         if (block_map.hasAnchoredBlocksForWeakHash(hash)) {
             // Hash found. Calculate MD5 and see if we match with a known block.
 
@@ -57,7 +55,6 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
 
             //TODO: Add the preferred file idx here (lukas)
             known_block = block_map.getAnchoredBlock(block_hash, 0);
-            // known_block = null;
         }
 
         if (known_block) |block| {
