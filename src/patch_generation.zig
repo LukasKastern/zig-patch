@@ -234,10 +234,19 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
 
     try patch.seekTo(0);
 
+    const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
+    var buffered_file_writer: BufferedFileWriter = .{
+        .unbuffered_writer = patch_writer,
+    };
+
+    var buffered_writer = buffered_file_writer.writer();
+
     // Write the header once without the actual file data.
     // The file data will be populated in the loop below.
     // Once all the data is written we go back to the start of the file and write the proper data.
-    try patch_file.savePatchHeader(patch_writer);
+    try patch_file.savePatchHeader(buffered_writer);
+    try buffered_file_writer.flush();
+
     var reserved_header_bytes = try patch.getPos();
 
     var offset_in_file: usize = reserved_header_bytes;
@@ -281,8 +290,8 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
             var read_bytes = try fs_part.readAll(read_buffer);
             std.debug.assert(read_bytes == try fs_part.getEndPos());
 
-            try patch.writer().writeIntBig(usize, read_bytes);
-            try patch.writeAll(read_buffer[0..read_bytes]);
+            try buffered_writer.writeIntBig(usize, read_bytes);
+            try buffered_writer.writeAll(read_buffer[0..read_bytes]);
 
             offset_in_file += read_bytes + @sizeOf(usize);
         }
@@ -290,8 +299,11 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
         file_idx += 1;
     }
 
+    try buffered_file_writer.flush();
+
     try patch.seekTo(0);
-    try patch_file.savePatchHeader(patch_writer);
+    try patch_file.savePatchHeader(buffered_writer);
+    try buffered_file_writer.flush();
 
     if (try patch.getPos() != reserved_header_bytes) {
         return error.ReservedHeaderSizeMismatchesWrittenLen;
