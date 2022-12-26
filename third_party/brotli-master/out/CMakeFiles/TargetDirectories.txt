@@ -1,0 +1,12 @@
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/brotlicommon.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/brotlidec.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/brotlienc.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/brotli.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/Experimental.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/Nightly.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/Continuous.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/NightlyMemoryCheck.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/RUN_TESTS.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/INSTALL.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/ALL_BUILD.dir
+C:/wharf-zig/third_party/brotli-master/out/CMakeFiles/ZERO_CHECK.dir

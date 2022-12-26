@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="16.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\wharf-zig\third_party\brotli-master\out\CMakeFiles\65279c254f668f7a21c5e589ef1a60e9\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{8A717AE6-6A99-3055-A330-D1CC9B32CB22}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

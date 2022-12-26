@@ -1,3 +1,8 @@
+const brotli = @cImport({
+    @cInclude("brotli/encode.h");
+    @cInclude("brotli/decode.h");
+});
+
 const std = @import("std");
 const operations = @import("operations.zig");
 const ThreadPool = @import("zap/thread_pool_go_based.zig");
@@ -183,66 +188,78 @@ fn areDirectoriesEqual(lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *T
     return true;
 }
 
+const BrotliAllocator = struct {
+    pub fn alloc(self: *anyopaque, size: usize) *anyopaque {
+        _ = self;
+        _ = size;
+        return undefined;
+    }
+};
+
+test "Try Compress" {
+    _ = brotli.BrotliEncoderCreateInstance(undefined, undefined, undefined);
+}
+
 test "Full patch should match source folder" {
-    // const cwd = std.fs.cwd();
-    // const TestRootPath = "temp/CreateAndApplyFullPatchTest";
-    // cwd.makeDir("temp") catch |err| {
-    //     switch (err) {
-    //         error.PathAlreadyExists => {},
-    //         else => {
-    //             return error.CouldntCreateTemp;
-    //         },
-    //     }
-    // };
+    const cwd = std.fs.cwd();
+    const TestRootPath = "temp/CreateAndApplyFullPatchTest";
+    cwd.makeDir("temp") catch |err| {
+        switch (err) {
+            error.PathAlreadyExists => {},
+            else => {
+                return error.CouldntCreateTemp;
+            },
+        }
+    };
 
-    // try cwd.deleteTree(TestRootPath);
-    // try cwd.makeDir(TestRootPath);
-    // var test_root_dir = try cwd.openDir(TestRootPath, .{});
-    // defer test_root_dir.close();
+    try cwd.deleteTree(TestRootPath);
+    try cwd.makeDir(TestRootPath);
+    var test_root_dir = try cwd.openDir(TestRootPath, .{});
+    defer test_root_dir.close();
 
-    // var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
-    // defer std.testing.allocator.free(src_folder_path);
+    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    defer std.testing.allocator.free(src_folder_path);
 
-    // var target_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Patched" });
-    // defer std.testing.allocator.free(target_folder_path);
+    var target_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Patched" });
+    defer std.testing.allocator.free(target_folder_path);
 
-    // // Create the source folder
-    // {
-    //     try cwd.makeDir(src_folder_path);
-    //     var src_folder = try cwd.openDir(src_folder_path, .{});
-    //     defer src_folder.close();
+    // Create the source folder
+    {
+        try cwd.makeDir(src_folder_path);
+        var src_folder = try cwd.openDir(src_folder_path, .{});
+        defer src_folder.close();
 
-    //     try generateTestFolder(12587, src_folder, .{});
-    // }
+        try generateTestFolder(12587, src_folder, .{});
+    }
 
-    // // Create the target folder
-    // {
-    //     try cwd.makeDir(target_folder_path);
-    //     var target_folder = try cwd.openDir(target_folder_path, .{});
-    //     defer target_folder.close();
-    // }
+    // Create the target folder
+    {
+        try cwd.makeDir(target_folder_path);
+        var target_folder = try cwd.openDir(target_folder_path, .{});
+        defer target_folder.close();
+    }
 
-    // var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
-    // thread_pool.spawnThreads();
+    var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    thread_pool.spawnThreads();
 
-    // var operation_config: operations.OperationConfig = .{
-    //     .working_dir = test_root_dir,
-    //     .thread_pool = &thread_pool,
-    //     .allocator = std.testing.allocator,
-    // };
+    var operation_config: operations.OperationConfig = .{
+        .working_dir = test_root_dir,
+        .thread_pool = &thread_pool,
+        .allocator = std.testing.allocator,
+    };
 
-    // try operations.createPatch("Original", null, operation_config);
-    // try operations.applyPatch("Patch.pwd", "Patched", operation_config);
+    try operations.createPatch("Original", null, operation_config);
+    try operations.applyPatch("Patch.pwd", "Patched", operation_config);
 
-    // {
-    //     var src_folder = try cwd.openDir(src_folder_path, .{});
-    //     defer src_folder.close();
+    {
+        var src_folder = try cwd.openDir(src_folder_path, .{});
+        defer src_folder.close();
 
-    //     var target_folder = try cwd.openDir(target_folder_path, .{});
-    //     defer target_folder.close();
+        var target_folder = try cwd.openDir(target_folder_path, .{});
+        defer target_folder.close();
 
-    //     try std.testing.expect(try areDirectoriesEqual(src_folder, target_folder, &thread_pool, std.testing.allocator));
-    // }
+        try std.testing.expect(try areDirectoriesEqual(src_folder, target_folder, &thread_pool, std.testing.allocator));
+    }
 }
 
 // Generate two identical folders.

@@ -11,10 +11,57 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
 
+    var brotli = b.addStaticLibrary("Brotli", null);
+    brotli.setTarget(target);
+    brotli.setBuildMode(mode);
+    // brotli.install();
+
+    brotli.addCSourceFiles(&.{
+        "third_party\\brotli-master\\c\\common\\constants.c",
+        "third_party\\brotli-master\\c\\common\\context.c",
+        "third_party\\brotli-master\\c\\common\\dictionary.c",
+        "third_party\\brotli-master\\c\\common\\platform.c",
+        "third_party\\brotli-master\\c\\common\\shared_dictionary.c",
+        "third_party\\brotli-master\\c\\common\\transform.c",
+
+        "third_party\\brotli-master\\c\\dec\\bit_reader.c",
+        "third_party\\brotli-master\\c\\dec\\decode.c",
+        "third_party\\brotli-master\\c\\dec\\huffman.c",
+        "third_party\\brotli-master\\c\\dec\\state.c",
+
+        "third_party\\brotli-master\\c\\enc\\backward_references_hq.c",
+        "third_party\\brotli-master\\c\\enc\\backward_references.c",
+        "third_party\\brotli-master\\c\\enc\\bit_cost.c",
+        "third_party\\brotli-master\\c\\enc\\block_splitter.c",
+        "third_party\\brotli-master\\c\\enc\\brotli_bit_stream.c",
+        "third_party\\brotli-master\\c\\enc\\cluster.c",
+        "third_party\\brotli-master\\c\\enc\\command.c",
+        "third_party\\brotli-master\\c\\enc\\compound_dictionary.c",
+        "third_party\\brotli-master\\c\\enc\\compress_fragment_two_pass.c",
+        "third_party\\brotli-master\\c\\enc\\compress_fragment.c",
+        "third_party\\brotli-master\\c\\enc\\dictionary_hash.c",
+        "third_party\\brotli-master\\c\\enc\\encode.c",
+        "third_party\\brotli-master\\c\\enc\\encoder_dict.c",
+        "third_party\\brotli-master\\c\\enc\\entropy_encode.c",
+        "third_party\\brotli-master\\c\\enc\\fast_log.c",
+        "third_party\\brotli-master\\c\\enc\\histogram.c",
+        "third_party\\brotli-master\\c\\enc\\literal_cost.c",
+        "third_party\\brotli-master\\c\\enc\\memory.c",
+        "third_party\\brotli-master\\c\\enc\\metablock.c",
+        "third_party\\brotli-master\\c\\enc\\static_dict.c",
+        "third_party\\brotli-master\\c\\enc\\utf8_util.c",
+    }, &.{});
+    brotli.addIncludePath("third_party\\brotli-master\\c\\include");
+    brotli.linkLibC();
+    brotli.install();
+
     const exe = b.addExecutable("wharf-zig", "src/main.zig");
+    exe.addIncludePath("third_party\\brotli-master\\c\\include");
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();
+
+    exe.linkLibrary(brotli);
 
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
@@ -26,6 +73,9 @@ pub fn build(b: *std.build.Builder) void {
     run_step.dependOn(&run_cmd.step);
 
     const test_exe = b.addTestExe("test", "src/main.zig");
+    test_exe.linkLibrary(brotli);
+    test_exe.addIncludePath("third_party\\brotli-master\\c\\include");
+
     const install_test = b.addInstallArtifact(test_exe);
 
     { // >>> TEST - BUILD ONLY >>>
