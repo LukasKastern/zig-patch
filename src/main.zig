@@ -12,6 +12,7 @@ const PatchGeneration = @import("patch_generation.zig");
 const PatchHeader = @import("patch_header.zig").PatchHeader;
 const ApplyPatch = @import("apply_patch.zig");
 const operations = @import("operations.zig");
+const OperationStats = operations.OperationStats;
 
 const clap = @import("clap");
 
@@ -88,11 +89,21 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         return;
     }
 
+    var stats: OperationStats = .{};
+
     try operations.createPatch(folder.?, previous_signature, .{
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,
-    });
+    }, &stats);
+
+    var create_patch_stats = stats.create_patch_stats.?;
+
+    var total_blocks = if (create_patch_stats.total_blocks == 0) 1 else create_patch_stats.total_blocks;
+
+    var changed_blocks_percentage = @intToFloat(f64, create_patch_stats.changed_blocks) / @intToFloat(f64, total_blocks) * 100;
+
+    std.debug.print("Created Patch in {d:2}ms - {d:.3}% ({}/{}) of blocks changed", .{ stats.total_operation_time, changed_blocks_percentage, create_patch_stats.changed_blocks, create_patch_stats.total_blocks });
 }
 
 fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {

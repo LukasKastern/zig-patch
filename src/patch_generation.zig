@@ -8,7 +8,7 @@ const PatchHeader = @import("patch_header.zig").PatchHeader;
 const BlockSize = @import("block.zig").BlockSize;
 const Compression = @import("compression/compression.zig").Compression;
 
-const ApplyPatchStats = @import("operations.zig").OperationStats.ApplyPatchStats;
+const CreatePatchStats = @import("operations.zig").OperationStats.CreatePatchStats;
 
 const PatchFileInfo = struct {
     file_idx: usize,
@@ -34,7 +34,6 @@ const CreatePatchOptions = struct {
     max_work_unit_size: usize = DefaultMaxWorkUnitSize,
     staging_dir: std.fs.Dir,
     build_dir: std.fs.Dir,
-    stats: ?ApplyPatchStats = numRealFilesInPatch,
 };
 
 const CreatePatchOperationsOptions = struct {
@@ -101,7 +100,7 @@ fn ParallelList(comptime T: type) type {
     };
 }
 
-pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOptions) !void {
+pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats) !void {
     const PerPatchPartStagingFolderIO = struct {
         file_io: PatchFileIO,
         allocator: std.mem.Allocator,
@@ -109,7 +108,7 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         build_dir: std.fs.Dir,
         signature_file: *SignatureFile,
         max_work_unit_size: usize,
-
+        fallback_allocator: std.mem.Allocator,
         per_thread_compression_buffers: [][]u8,
 
         fn write(patch_file_io: *PatchFileIO, patch_data: PatchFileData) error{WritePatchError}!void {
@@ -129,7 +128,10 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
 
             BlockPatching.saveOperations(patch_data.operations, fixed_buffer_writer) catch return error.WritePatchError;
 
-            var deflating = Compression.Deflating.init(.Brotli, compression_allocator) catch return error.WritePatchError;
+            var deflating_stack_allocator = std.heap.stackFallback(DefaultMaxWorkUnitSize * 3, self.fallback_allocator);
+            var deflating_allocator = deflating_stack_allocator.get();
+
+            var deflating = Compression.Deflating.init(.Brotli, deflating_allocator) catch return error.WritePatchError;
             defer deflating.deinit();
 
             var deflated_bufer = compression_allocator.alloc(u8, self.max_work_unit_size + 256) catch return error.WritePatchError;
@@ -161,7 +163,7 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
     defer allocator.free(per_thread_compression_buffers);
 
     for (per_thread_compression_buffers) |*operations_buffer| {
-        operations_buffer.* = try allocator.alloc(u8, options.max_work_unit_size * 32 + 8096);
+        operations_buffer.* = try allocator.alloc(u8, options.max_work_unit_size * 4);
     }
 
     defer {
@@ -182,11 +184,12 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         .staging_dir = staging_folder,
         .max_work_unit_size = options.max_work_unit_size,
         .per_thread_compression_buffers = per_thread_compression_buffers,
+        .fallback_allocator = allocator,
     };
     // zig fmt: on
 
     // To allow better parallization we split files up into batches of MaxWorkUnitSize.
-    try createPerFilePatchOperations(thread_pool, new_signature, old_signature, allocator, .{ .patch_file_io = &staging_folder_io.file_io, .create_patch_options = options });
+    try createPerFilePatchOperations(thread_pool, new_signature, old_signature, allocator, .{ .patch_file_io = &staging_folder_io.file_io, .create_patch_options = options }, stats);
 
     // Once all the required operations have been generated we assemble the individual operations into one patch file.
     try assemblePatchFromFiles(new_signature, old_signature, staging_folder, allocator, options);
@@ -295,7 +298,7 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
     }
 }
 
-pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOperationsOptions) !void {
+pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOperationsOptions, patch_stats: ?*CreatePatchStats) !void {
     var num_patch_files: usize = numPatchFilesNeeded(new_signature, options.create_patch_options.max_work_unit_size);
 
     var anchored_block_map = try AnchoredBlocksMap.init(old_signature.*, allocator);
@@ -348,11 +351,16 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
 
                 for (generated_operations.items) |operation| {
                     switch (operation) {
-                        .Data => {
-                            changed_blocks += 1;
+                        .Data => |data| {
+                            var blocks_in_data_op = @ceil(@intToFloat(f64, data.len) / @intToFloat(f64, BlockSize));
+                            changed_blocks.* += @floatToInt(usize, blocks_in_data_op);
+                            total_blocks.* += @floatToInt(usize, blocks_in_data_op);
                         },
                         .BlockRange => {
-                            total_blocks += operation.BlockRange.span;
+                            total_blocks.* += operation.BlockRange.block_span;
+                        },
+                        else => {
+                            return error.UnexpectedOperation;
                         },
                     }
                 }
@@ -389,6 +397,25 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
         }
     }
 
+    var per_thread_stats: ?[]GeneratePatchTask.PerThreadStats = null;
+
+    if (patch_stats != null) {
+        per_thread_stats = try allocator.alloc(GeneratePatchTask.PerThreadStats, thread_pool.num_threads);
+
+        for (per_thread_stats.?) |*stat| {
+            stat.* = .{
+                .changed_blocks = 0,
+                .total_blocks = 0,
+            };
+        }
+    }
+
+    defer {
+        if (per_thread_stats) |stats| {
+            allocator.free(stats);
+        }
+    }
+
     var batch = ThreadPool.Batch{};
 
     var part_idx: usize = 0;
@@ -417,6 +444,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
             .io = options.patch_file_io,
             .per_thread_buffers = per_thread_buffers,
             .block_map = anchored_block_map,
+            .per_thread_stats = per_thread_stats,
         };
 
         batch.push(ThreadPool.Batch.from(&tasks[patch_file_idx].task));
@@ -428,6 +456,14 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
 
     while (patches_remaining.load(.Acquire) != 0 and are_patches_done.load(.Acquire) == 0) {
         std.Thread.Futex.wait(&are_patches_done, 0);
+    }
+
+    if (per_thread_stats) |per_thread_stats_unwrapped| {
+        var stats = patch_stats.?;
+        for (per_thread_stats_unwrapped) |thread_stats| {
+            stats.changed_blocks += thread_stats.changed_blocks;
+            stats.total_blocks += thread_stats.total_blocks;
+        }
     }
 }
 
@@ -535,7 +571,9 @@ test "two files with no previous signature should result in two data operation p
         io_mock.patches.deinit();
     }
 
-    try createPerFilePatchOperations(&thread_pool, new_signature, old_signature, std.testing.allocator, .{ .patch_file_io = &io_mock.file_io, .create_patch_options = .{ .staging_dir = undefined, .build_dir = undefined } });
+    var create_patch_options: CreatePatchOptions = .{ .staging_dir = undefined, .build_dir = undefined };
+
+    try createPerFilePatchOperations(&thread_pool, new_signature, old_signature, std.testing.allocator, .{ .patch_file_io = &io_mock.file_io, .create_patch_options = create_patch_options }, null);
 
     var patches = try io_mock.patches.flattenParallelList(std.testing.allocator);
     defer std.testing.allocator.free(patches);

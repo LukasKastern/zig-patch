@@ -11,12 +11,13 @@ pub const OperationStats = struct {
     pub const ApplyPatchStats = struct {};
 
     pub const CreatePatchStats = struct {
-        matching_blocks: usize,
-        total_blocks: usize,
+        changed_blocks: usize = 0,
+        total_blocks: usize = 0,
     };
 
     apply_patch_stats: ?ApplyPatchStats = null,
     create_patch_stats: ?CreatePatchStats = null,
+    total_operation_time: f64 = 0,
 };
 
 pub const OperationConfig = struct {
@@ -174,7 +175,7 @@ fn findPatchStagingDir(cwd: std.fs.Dir) !std.fs.Dir {
     return error.NoSuitableStagingPathFound;
 }
 
-pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const u8, config: OperationConfig) !void {
+pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const u8, config: OperationConfig, stats: ?*OperationStats) !void {
     var allocator = config.allocator;
     var thread_pool = config.thread_pool;
     var cwd: std.fs.Dir = config.working_dir;
@@ -242,11 +243,20 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
 
         std.log.info("Creating Patch...", .{});
 
+        var create_patch_stats: ?*OperationStats.CreatePatchStats = null;
+
+        if (stats) |stats_unwrapped| {
+            stats_unwrapped.create_patch_stats = .{};
+            create_patch_stats = &stats_unwrapped.create_patch_stats.?;
+        }
+
         var create_patch_start_sample = timer.read();
-        try PatchGeneration.createPatch(thread_pool, new_signature_file, prev_signature_file.?, allocator, .{ .build_dir = open_dir, .staging_dir = staging_dir });
+        try PatchGeneration.createPatch(thread_pool, new_signature_file, prev_signature_file.?, allocator, .{ .build_dir = open_dir, .staging_dir = staging_dir }, create_patch_stats);
         var create_patch_finish_sample = timer.read();
 
-        std.log.info("Created Patch in {d:2}ms", .{(@intToFloat(f64, create_patch_finish_sample) - @intToFloat(f64, create_patch_start_sample)) / 1000000});
+        if (stats) |*operation_stats| {
+            operation_stats.*.total_operation_time = (@intToFloat(f64, create_patch_finish_sample) - @intToFloat(f64, create_patch_start_sample)) / 1000000;
+        }
 
         staging_dir_path = try staging_dir.realpath("", &staging_patch_path_buffer);
 

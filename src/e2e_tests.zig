@@ -231,7 +231,7 @@ test "Full patch should match source folder" {
         .allocator = std.testing.allocator,
     };
 
-    try operations.createPatch("Original", null, operation_config);
+    try operations.createPatch("Original", null, operation_config, null);
     try operations.applyPatch("Patch.pwd", "Patched", operation_config);
 
     {
@@ -469,7 +469,7 @@ test "Patch should delete/create files and folders" {
     }
 
     var pre_create_patch = timer.read();
-    try operations.createPatch("Modified", "OriginalSignature", operation_config);
+    try operations.createPatch("Modified", "OriginalSignature", operation_config, null);
     var create_patch_sample = timer.read();
     std.debug.print("Creating patch took {d:2}ms", .{(@intToFloat(f64, create_patch_sample) - @intToFloat(f64, pre_create_patch)) / 1000000});
 
