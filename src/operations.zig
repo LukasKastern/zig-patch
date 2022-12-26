@@ -7,10 +7,23 @@ const SignatureFile = @import("signature_file.zig").SignatureFile;
 const PatchGeneration = @import("patch_generation.zig");
 const utils = @import("utils.zig");
 
+pub const OperationStats = struct {
+    pub const ApplyPatchStats = struct {};
+
+    pub const CreatePatchStats = struct {
+        matching_blocks: usize,
+        total_blocks: usize,
+    };
+
+    apply_patch_stats: ?ApplyPatchStats = null,
+    create_patch_stats: ?CreatePatchStats = null,
+};
+
 pub const OperationConfig = struct {
     thread_pool: *ThreadPool,
     allocator: std.mem.Allocator,
     working_dir: std.fs.Dir,
+    operation_stats: OperationStats = .{},
 };
 
 pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, config: OperationConfig) !void {

@@ -8,6 +8,8 @@ const PatchHeader = @import("patch_header.zig").PatchHeader;
 const BlockSize = @import("block.zig").BlockSize;
 const Compression = @import("compression/compression.zig").Compression;
 
+const ApplyPatchStats = @import("operations.zig").OperationStats.ApplyPatchStats;
+
 const PatchFileInfo = struct {
     file_idx: usize,
     file_part_idx: usize,
@@ -32,6 +34,7 @@ const CreatePatchOptions = struct {
     max_work_unit_size: usize = DefaultMaxWorkUnitSize,
     staging_dir: std.fs.Dir,
     build_dir: std.fs.Dir,
+    stats: ?ApplyPatchStats = numRealFilesInPatch,
 };
 
 const CreatePatchOperationsOptions = struct {
@@ -312,6 +315,13 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
 
         per_thread_buffers: [][]u8,
 
+        per_thread_stats: ?[]PerThreadStats,
+
+        pub const PerThreadStats = struct {
+            changed_blocks: usize,
+            total_blocks: usize,
+        };
+
         fn generatePatch(task: *ThreadPool.Task) void {
             var generate_patch_task_data = @fieldParentPtr(Self, "task", task);
             generatePatchImpl(generate_patch_task_data) catch unreachable;
@@ -330,6 +340,23 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
             var alloc = patch_operation_fixed_buffer_allocator.allocator();
 
             var generated_operations = try BlockPatching.generateOperationsForBuffer(buffer[0..read_len], self.block_map.*, MaxDataOperationLength, alloc);
+
+            if (self.per_thread_stats) |per_thread_stats_unwrapped| {
+                var thread_stats_data = &per_thread_stats_unwrapped[ThreadPool.Thread.current.?.idx];
+                var changed_blocks = &thread_stats_data.changed_blocks;
+                var total_blocks = &thread_stats_data.total_blocks;
+
+                for (generated_operations.items) |operation| {
+                    switch (operation) {
+                        .Data => {
+                            changed_blocks += 1;
+                        },
+                        .BlockRange => {
+                            total_blocks += operation.BlockRange.span;
+                        },
+                    }
+                }
+            }
 
             try self.io.write_patch_file(self.io, .{
                 .operations = generated_operations,
