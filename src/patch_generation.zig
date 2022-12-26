@@ -5,6 +5,7 @@ const ThreadPool = @import("zap/thread_pool_go_based.zig");
 const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
 const MaxDataOperationLength = @import("block_patching.zig").MaxDataOperationLength;
 const PatchHeader = @import("patch_header.zig").PatchHeader;
+const BlockSize = @import("block.zig").BlockSize;
 
 const PatchFileInfo = struct {
     file_idx: usize,
@@ -24,7 +25,7 @@ const PatchFileIO = struct {
     read_patch_file: ReadPatchFile,
 };
 
-pub const DefaultMaxWorkUnitSize = 1024 * 1024 * 25;
+pub const DefaultMaxWorkUnitSize = BlockSize * 200;
 
 const CreatePatchOptions = struct {
     max_work_unit_size: usize = DefaultMaxWorkUnitSize,
@@ -286,7 +287,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
                 return error.ReadingPatchFileFailed;
             }
 
-            var patch_operations_buffer: [2400]u8 = undefined;
+            var patch_operations_buffer: [8000]u8 = undefined;
             var patch_operation_fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(&patch_operations_buffer);
             var alloc = patch_operation_fixed_buffer_allocator.allocator();
 

@@ -9,7 +9,7 @@
             "command": "zig",
             "args": [
                 "build",
-                // "-Drelease-safe=true",
+                "-Drelease-fast=true",
             ],
             "group": {
                 "kind": "build",
@@ -46,7 +46,8 @@
             "command": "zig",
             "args": [
                 "build",
-                "build-test"
+                "build-test",
+                "-Drelease-fast=true",
             ],
             "group": {
                 "kind": "build",

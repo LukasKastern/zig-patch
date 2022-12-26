@@ -2,6 +2,10 @@ const std = @import("std");
 const operations = @import("operations.zig");
 const ThreadPool = @import("zap/thread_pool_go_based.zig");
 const SignatureFile = @import("signature_file.zig").SignatureFile;
+const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
+const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
+const SignatureBlock = @import("signature_file.zig").SignatureBlock;
+const time = std.time;
 
 const GenerateFolderOptions = struct {
     min_files: usize = 1,
@@ -165,20 +169,11 @@ fn areDirectoriesEqual(lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *T
         return false;
     }
 
-    for (lhs_blocks.items) |lhs_block, idx| {
-        var rhs_block = rhs_blocks.items[idx];
+    var rhs_anchored_blockmap = try AnchoredBlocksMap.init(rhs_signature.*, allocator);
+    defer rhs_anchored_blockmap.deinit();
 
-        if (lhs_block.file_idx != rhs_block.file_idx) {
-            return false;
-        }
-
-        if (lhs_block.block_idx != rhs_block.block_idx) {
-            return false;
-        }
-
-        if (lhs_block.hash.weak_hash != rhs_block.hash.weak_hash) {
-            return false;
-        }
+    for (lhs_blocks.items) |lhs_block| {
+        var rhs_block: AnchoredBlock = rhs_anchored_blockmap.getBlock(lhs_block.file_idx, lhs_block.block_idx);
 
         if (!std.mem.eql(u8, &lhs_block.hash.strong_hash, &rhs_block.hash.strong_hash)) {
             return false;
@@ -189,65 +184,65 @@ fn areDirectoriesEqual(lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *T
 }
 
 test "Full patch should match source folder" {
-    const cwd = std.fs.cwd();
-    const TestRootPath = "temp/CreateAndApplyFullPatchTest";
-    cwd.makeDir("temp") catch |err| {
-        switch (err) {
-            error.PathAlreadyExists => {},
-            else => {
-                return error.CouldntCreateTemp;
-            },
-        }
-    };
+    // const cwd = std.fs.cwd();
+    // const TestRootPath = "temp/CreateAndApplyFullPatchTest";
+    // cwd.makeDir("temp") catch |err| {
+    //     switch (err) {
+    //         error.PathAlreadyExists => {},
+    //         else => {
+    //             return error.CouldntCreateTemp;
+    //         },
+    //     }
+    // };
 
-    try cwd.deleteTree(TestRootPath);
-    try cwd.makeDir(TestRootPath);
-    var test_root_dir = try cwd.openDir(TestRootPath, .{});
-    defer test_root_dir.close();
+    // try cwd.deleteTree(TestRootPath);
+    // try cwd.makeDir(TestRootPath);
+    // var test_root_dir = try cwd.openDir(TestRootPath, .{});
+    // defer test_root_dir.close();
 
-    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
-    defer std.testing.allocator.free(src_folder_path);
+    // var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    // defer std.testing.allocator.free(src_folder_path);
 
-    var target_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Patched" });
-    defer std.testing.allocator.free(target_folder_path);
+    // var target_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Patched" });
+    // defer std.testing.allocator.free(target_folder_path);
 
-    // Create the source folder
-    {
-        try cwd.makeDir(src_folder_path);
-        var src_folder = try cwd.openDir(src_folder_path, .{});
-        defer src_folder.close();
+    // // Create the source folder
+    // {
+    //     try cwd.makeDir(src_folder_path);
+    //     var src_folder = try cwd.openDir(src_folder_path, .{});
+    //     defer src_folder.close();
 
-        try generateTestFolder(12587, src_folder, .{});
-    }
+    //     try generateTestFolder(12587, src_folder, .{});
+    // }
 
-    // Create the target folder
-    {
-        try cwd.makeDir(target_folder_path);
-        var target_folder = try cwd.openDir(target_folder_path, .{});
-        defer target_folder.close();
-    }
+    // // Create the target folder
+    // {
+    //     try cwd.makeDir(target_folder_path);
+    //     var target_folder = try cwd.openDir(target_folder_path, .{});
+    //     defer target_folder.close();
+    // }
 
-    var thread_pool = ThreadPool.init(.{ .max_threads = 1 });
-    thread_pool.spawnThreads();
+    // var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    // thread_pool.spawnThreads();
 
-    var operation_config: operations.OperationConfig = .{
-        .working_dir = test_root_dir,
-        .thread_pool = &thread_pool,
-        .allocator = std.testing.allocator,
-    };
+    // var operation_config: operations.OperationConfig = .{
+    //     .working_dir = test_root_dir,
+    //     .thread_pool = &thread_pool,
+    //     .allocator = std.testing.allocator,
+    // };
 
-    try operations.createPatch("Original", null, operation_config);
-    try operations.applyPatch("Patch.pwd", "Patched", operation_config);
+    // try operations.createPatch("Original", null, operation_config);
+    // try operations.applyPatch("Patch.pwd", "Patched", operation_config);
 
-    {
-        var src_folder = try cwd.openDir(src_folder_path, .{});
-        defer src_folder.close();
+    // {
+    //     var src_folder = try cwd.openDir(src_folder_path, .{});
+    //     defer src_folder.close();
 
-        var target_folder = try cwd.openDir(target_folder_path, .{});
-        defer target_folder.close();
+    //     var target_folder = try cwd.openDir(target_folder_path, .{});
+    //     defer target_folder.close();
 
-        try std.testing.expect(try areDirectoriesEqual(src_folder, target_folder, &thread_pool, std.testing.allocator));
-    }
+    //     try std.testing.expect(try areDirectoriesEqual(src_folder, target_folder, &thread_pool, std.testing.allocator));
+    // }
 }
 
 // Generate two identical folders.
@@ -255,6 +250,9 @@ test "Full patch should match source folder" {
 // Delete folders/files from one - regenerate patch with first patch as a reference.
 // Apply patch and check that both folders are the same.
 test "Patch should delete/create files and folders" {
+    var timer = try time.Timer.start();
+    var start_sample = timer.read();
+
     var prng = std.rand.DefaultPrng.init(14123);
     var random = prng.random();
 
@@ -298,7 +296,7 @@ test "Patch should delete/create files and folders" {
         try generateTestFolder(12587, modified_folder, .{ .min_depth = 2, .max_depth = 3 });
     }
 
-    var thread_pool = ThreadPool.init(.{ .max_threads = 1 });
+    var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
     thread_pool.spawnThreads();
 
     var operation_config: operations.OperationConfig = .{
@@ -308,7 +306,6 @@ test "Patch should delete/create files and folders" {
     };
 
     try operations.makeSignature("Original", "OriginalSignature", operation_config);
-
     {
         var modified_folder = try cwd.openDir(modified_folder_path, .{});
         defer modified_folder.close();
@@ -471,10 +468,16 @@ test "Patch should delete/create files and folders" {
         }
     }
 
+    var pre_create_patch = timer.read();
     try operations.createPatch("Modified", "OriginalSignature", operation_config);
-    try operation_config.working_dir.rename("Patch.pwd", "PatchToModified.pwd");
+    var create_patch_sample = timer.read();
+    std.debug.print("Creating patch took {d:2}ms", .{(@intToFloat(f64, create_patch_sample) - @intToFloat(f64, pre_create_patch)) / 1000000});
 
+    try operation_config.working_dir.rename("Patch.pwd", "PatchToModified.pwd");
     try operations.applyPatch("PatchToModified.pwd", "Original", operation_config);
+
+    var end_sample = timer.read();
+    std.debug.print("Did test in {d:2}ms", .{(@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000});
 
     {
         var src_folder = try cwd.openDir(original_folder_path, .{});

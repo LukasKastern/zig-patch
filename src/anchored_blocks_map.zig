@@ -17,6 +17,10 @@ pub const AnchoredBlocksMap = struct {
 
     allocator: std.mem.Allocator,
     underlying_hash_map: HashMapType,
+    all_blocks: std.ArrayList(AnchoredBlock),
+
+    // Index of the start of each file in the all blocks array.
+    block_start_by_file: std.ArrayList(usize),
 
     const Self = @This();
 
@@ -26,6 +30,28 @@ pub const AnchoredBlocksMap = struct {
         self.underlying_hash_map = HashMapType.init(allocator);
         try self.underlying_hash_map.ensureTotalCapacity(@truncate(u32, signature_file.blocks.items.len));
         try self.anchorBlockHashes(signature_file);
+
+        self.all_blocks = try std.ArrayList(AnchoredBlock).initCapacity(allocator, signature_file.blocks.items.len);
+        self.block_start_by_file = try std.ArrayList(usize).initCapacity(allocator, signature_file.files.items.len);
+
+        try self.all_blocks.resize(signature_file.blocks.items.len);
+        try self.block_start_by_file.resize(signature_file.files.items.len);
+
+        var current_block_start: usize = 0;
+
+        for (self.block_start_by_file.items) |*element, idx| {
+            var file = signature_file.files.items[idx];
+            element.* = current_block_start;
+
+            var num_blocks_per_file = @floatToInt(usize, @ceil(@intToFloat(f64, file.size) / BlockSize));
+            current_block_start += num_blocks_per_file;
+        }
+
+        for (signature_file.blocks.items) |block| {
+            var start_idx = self.block_start_by_file.items[block.file_idx];
+
+            self.all_blocks.items[start_idx + block.block_idx] = anchoredBlockFromSignatureBlock(signature_file, block);
+        }
 
         return self;
     }
@@ -40,8 +66,16 @@ pub const AnchoredBlocksMap = struct {
             }
         }
 
+        self.all_blocks.deinit();
+        self.block_start_by_file.deinit();
+
         self.underlying_hash_map.deinit();
         self.allocator.destroy(self);
+    }
+
+    pub fn getBlock(self: Self, file_idx: usize, block_idx: usize) AnchoredBlock {
+        var start_idx = self.block_start_by_file.items[file_idx];
+        return self.all_blocks.items[start_idx + block_idx];
     }
 
     pub fn getAnchoredBlock(self: Self, hash: BlockHash, preferred_file_idx: usize) ?AnchoredBlock {
@@ -76,6 +110,18 @@ pub const AnchoredBlocksMap = struct {
         }
 
         try blocks.append(anchored_block);
+    }
+
+    fn anchoredBlockFromSignatureBlock(signature_file: SignatureFile, signature_block: SignatureBlock) AnchoredBlock {
+        var file = signature_file.files.items[signature_block.file_idx];
+        var left_over_bytes = std.math.min(BlockSize, file.size - BlockSize * signature_block.block_idx);
+
+        return .{
+            .file_index = signature_block.file_idx,
+            .block_index = signature_block.block_idx,
+            .short_size = BlockSize - left_over_bytes,
+            .hash = signature_block.hash,
+        };
     }
 
     fn anchorBlockHashes(anchored_hashes: *AnchoredBlocksMap, signature_file: SignatureFile) !void {
@@ -141,10 +187,10 @@ test "Simple signature file should be anchored" {
     };
 
     var signature_blocks: [4]SignatureBlock = undefined;
-    signature_blocks[0] = .{ .file_idx = 5, .block_idx = 6, .hash = hashes[0] };
-    signature_blocks[1] = .{ .file_idx = 5, .block_idx = 6, .hash = hashes[1] };
-    signature_blocks[2] = .{ .file_idx = 5, .block_idx = 6, .hash = hashes[2] };
-    signature_blocks[3] = .{ .file_idx = 5, .block_idx = 6, .hash = hashes[3] };
+    signature_blocks[0] = .{ .file_idx = 0, .block_idx = 0, .hash = hashes[0] };
+    signature_blocks[1] = .{ .file_idx = 0, .block_idx = 1, .hash = hashes[1] };
+    signature_blocks[2] = .{ .file_idx = 1, .block_idx = 0, .hash = hashes[2] };
+    signature_blocks[3] = .{ .file_idx = 1, .block_idx = 1, .hash = hashes[3] };
 
     try signature_file.blocks.appendSlice(&signature_blocks);
 
@@ -159,8 +205,6 @@ test "Simple signature file should be anchored" {
             try std.testing.expect(false);
         }
     }
-
-    std.debug.print("lel", .{});
 }
 
 test "Blocks with same strong hash should be picked based on the preferred file" {
@@ -198,10 +242,10 @@ test "Blocks with same strong hash should be picked based on the preferred file"
     hashes[3] = hashes[1];
 
     var signature_blocks: [4]SignatureBlock = undefined;
-    signature_blocks[0] = .{ .file_idx = 0, .block_idx = 2, .hash = hashes[0] };
-    signature_blocks[1] = .{ .file_idx = 0, .block_idx = 5, .hash = hashes[1] };
-    signature_blocks[2] = .{ .file_idx = 1, .block_idx = 4, .hash = hashes[2] };
-    signature_blocks[3] = .{ .file_idx = 1, .block_idx = 3, .hash = hashes[3] };
+    signature_blocks[0] = .{ .file_idx = 0, .block_idx = 0, .hash = hashes[0] };
+    signature_blocks[1] = .{ .file_idx = 0, .block_idx = 1, .hash = hashes[1] };
+    signature_blocks[2] = .{ .file_idx = 1, .block_idx = 0, .hash = hashes[2] };
+    signature_blocks[3] = .{ .file_idx = 1, .block_idx = 1, .hash = hashes[3] };
 
     try signature_file.blocks.appendSlice(signature_blocks[0..]);
 

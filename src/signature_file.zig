@@ -100,19 +100,19 @@ pub const SignatureFile = struct {
 
             var buffer: [BlockSize]u8 = undefined;
             try file.seekTo(read_offset);
-            _ = try file.read(&buffer);
+            var read_bytes = try file.read(&buffer);
 
             var rolling_hash: RollingHash = .{};
-            rolling_hash.recompute(&buffer);
+            rolling_hash.recompute(buffer[0..read_bytes]);
 
             var block_hash: BlockHash = .{
                 .weak_hash = rolling_hash.hash,
                 .strong_hash = undefined,
             };
 
-            std.crypto.hash.Md5.hash(&buffer, &block_hash.strong_hash, .{});
+            std.crypto.hash.Md5.hash(buffer[0..read_bytes], &block_hash.strong_hash, .{});
 
-            var signature_block: SignatureBlock = .{ .file_idx = self.file_idx, .block_idx = self.block_idx, .hash = block_hash };
+            var signature_block: SignatureBlock = .{ .file_idx = self.file_idx, .block_idx = self.block_idx_in_file, .hash = block_hash };
 
             var thread_idx = ThreadPool.Thread.current.?.idx;
             var hashes = &self.per_thread_block_hashes.items[thread_idx];

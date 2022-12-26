@@ -98,7 +98,7 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
 
     try ApplyPatch.createFileStructure(tmp_folder.?, patch);
 
-    try ApplyPatch.applyPatch(cwd, tmp_folder.?, patch_file_path, patch, thread_pool, allocator);
+    try ApplyPatch.applyPatch(cwd, source_folder, tmp_folder.?, patch_file_path, patch, thread_pool, allocator);
 
     if (source_folder) |*source_folder_unwrapped| {
         // If we already have a folder at the source path we back it up.

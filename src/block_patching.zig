@@ -5,6 +5,7 @@ const WeakHashType = @import("block.zig").WeakHashType;
 const BlockSize = @import("block.zig").BlockSize;
 const RollingHash = @import("rolling_hash.zig").RollingHash;
 const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
+const BlockHash = @import("block.zig").BlockHash;
 
 pub const MaxDataOperationLength = 1024 * 1024 * 4;
 
@@ -17,7 +18,7 @@ pub const BlockRangeOperation = struct {
 pub const PatchOperation = union(enum) { Invalid: void, BlockRange: BlockRangeOperation, Data: []u8 };
 
 pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, max_operation_len: usize, allocator: std.mem.Allocator) !std.ArrayList(PatchOperation) {
-    const max_operations = @floatToInt(usize, @ceil(@intToFloat(f64, buffer.len) / @intToFloat(f64, max_operation_len)));
+    const max_operations = @floatToInt(usize, @ceil(@intToFloat(f64, buffer.len) / @intToFloat(f64, BlockSize)));
     var patch_operations = try std.ArrayList(PatchOperation).initCapacity(allocator, max_operations);
 
     var tail: usize = 0;
@@ -31,6 +32,10 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
     while (tail <= buffer.len) {
         if (jump_to_next_block) {
             head = std.math.min(head + BlockSize, buffer.len);
+
+            if (tail == head) {
+                break;
+            }
             rolling_hash.recompute(buffer[tail..head]);
             jump_to_next_block = false;
         } else {
@@ -41,17 +46,27 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
 
         var known_block: ?AnchoredBlock = null;
 
+        if (head == 0) {}
+
         if (block_map.hasAnchoredBlocksForWeakHash(hash)) {
             // Hash found. Calculate MD5 and see if we match with a known block.
+
+            var block_hash: BlockHash = .{ .weak_hash = hash, .strong_hash = undefined };
+
+            std.crypto.hash.Md5.hash(buffer[tail..head], &block_hash.strong_hash, .{});
+
+            //TODO: Add the preferred file idx here (lukas)
+            known_block = block_map.getAnchoredBlock(block_hash, 0);
+            // known_block = null;
         }
 
         if (known_block) |block| {
             if (tail != owed_data_tail) {
-                patch_operations.appendAssumeCapacity(.{ .Data = buffer[owed_data_tail..tail] });
+                try patch_operations.append(.{ .Data = buffer[owed_data_tail..tail] });
             }
 
             //TODO: Check if last operation is the same. If so merge span. (lukas)
-            patch_operations.appendAssumeCapacity(.{ .BlockRange = .{ .file_index = block.file_index, .block_index = block.block_index, .block_span = 1 } });
+            try patch_operations.append(.{ .BlockRange = .{ .file_index = block.file_index, .block_index = block.block_index, .block_span = 1 } });
 
             owed_data_tail = head;
             tail = head;
@@ -64,7 +79,9 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
             const needs_to_omit_data_op = reached_end_of_buffer or (tail - owed_data_tail >= max_operation_len);
 
             if (can_omit_data_op and needs_to_omit_data_op) {
-                patch_operations.appendAssumeCapacity(.{ .Data = buffer[owed_data_tail..tail] });
+                var slice = buffer[owed_data_tail..tail];
+
+                try patch_operations.append(.{ .Data = slice });
                 owed_data_tail = tail;
             }
         }
@@ -206,7 +223,7 @@ pub fn loadOperations(allocator: std.mem.Allocator, reader: anytype) !std.ArrayL
             };
         }
 
-        operations.appendAssumeCapacity(operation);
+        try operations.append(operation);
     }
 
     return operations;

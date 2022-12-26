@@ -5,6 +5,9 @@ const SignatureFile = @import("signature_file.zig").SignatureFile;
 const ThreadPool = @import("zap/thread_pool_go_based.zig");
 const PatchGeneration = @import("patch_generation.zig");
 const BlockPatching = @import("block_patching.zig");
+const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
+const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
+const BlockSize = @import("block.zig").BlockSize;
 
 pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
     const old_signature = patch.old;
@@ -71,12 +74,17 @@ const ApplyPatchTask = struct {
     are_sections_done: *std.atomic.Atomic(u32),
     sections_remaining: *std.atomic.Atomic(usize),
 
+    old_signature: *SignatureFile,
+    anchored_blocks_map: *AnchoredBlocksMap,
+
+    source_dir: ?std.fs.Dir,
     target_dir: std.fs.Dir,
     per_thread_patch_files: []std.fs.File,
     section: FileSection,
     file: SignatureFile.File,
 
     per_thread_operations_buffer: [][]u8,
+    per_thread_read_buffers: [][]u8,
 
     fn applyPatch(task: *ThreadPool.Task) void {
         var apply_patch_task_data = @fieldParentPtr(Self, "task", task);
@@ -96,8 +104,6 @@ const ApplyPatchTask = struct {
 
         var file_reader = patch_file.reader();
 
-        // std.debug.print("{} patches for file {s}\n", .{ num_patch_sections, self.file.name });
-
         var target_file = try self.target_dir.openFile(self.file.name, .{
             .mode = .write_only,
         });
@@ -115,8 +121,22 @@ const ApplyPatchTask = struct {
             for (operations.items) |operation| {
                 if (operation == .Data) {
                     try target_file_writer.writeAll(operation.Data);
-                } else {
-                    return error.NonDataOperationFound;
+                } else if (operation == .BlockRange) {
+                    var block_range = operation.BlockRange;
+                    var block = self.anchored_blocks_map.getBlock(block_range.file_index, block_range.block_index);
+
+                    var src_file = self.old_signature.files.items[block.file_index];
+                    var file = try self.source_dir.?.openFile(src_file.name, .{});
+                    defer file.close();
+
+                    try file.seekTo(block_range.block_index * BlockSize);
+                    var reader = file.reader();
+
+                    var read_buffer = self.per_thread_read_buffers[ThreadPool.Thread.current.?.idx];
+                    var read_bytes = read_buffer[0..(BlockSize - block.short_size)];
+
+                    try reader.readNoEof(read_bytes);
+                    try target_file_writer.writeAll(read_bytes);
                 }
             }
         }
@@ -128,7 +148,7 @@ const ApplyPatchTask = struct {
     }
 };
 
-pub fn applyPatch(working_dir: std.fs.Dir, target_dir: std.fs.Dir, patch_file_path: []const u8, patch: *PatchHeader, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
+pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: std.fs.Dir, patch_file_path: []const u8, patch: *PatchHeader, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
     var per_thread_operations_buffer = try allocator.alloc([]u8, thread_pool.max_threads);
     defer allocator.free(per_thread_operations_buffer);
 
@@ -138,6 +158,19 @@ pub fn applyPatch(working_dir: std.fs.Dir, target_dir: std.fs.Dir, patch_file_pa
 
     defer {
         for (per_thread_operations_buffer) |operations_buffer| {
+            allocator.free(operations_buffer);
+        }
+    }
+
+    var per_thread_read_buffer = try allocator.alloc([]u8, thread_pool.max_threads);
+    defer allocator.free(per_thread_read_buffer);
+
+    for (per_thread_read_buffer) |*operations_buffer| {
+        operations_buffer.* = try allocator.alloc(u8, BlockSize);
+    }
+
+    defer {
+        for (per_thread_read_buffer) |operations_buffer| {
             allocator.free(operations_buffer);
         }
     }
@@ -158,6 +191,9 @@ pub fn applyPatch(working_dir: std.fs.Dir, target_dir: std.fs.Dir, patch_file_pa
     var tasks = try allocator.alloc(ApplyPatchTask, patch.sections.items.len);
     defer allocator.free(tasks);
 
+    var anchored_blocks_map = try AnchoredBlocksMap.init(patch.old.*, allocator);
+    defer anchored_blocks_map.deinit();
+
     var batch = ThreadPool.Batch{};
 
     var sections_remaining = std.atomic.Atomic(usize).init(patch.sections.items.len);
@@ -167,7 +203,7 @@ pub fn applyPatch(working_dir: std.fs.Dir, target_dir: std.fs.Dir, patch_file_pa
     while (task_idx < patch.sections.items.len) : (task_idx += 1) {
         var section = patch.sections.items[task_idx];
 
-        tasks[task_idx] = .{ .per_thread_operations_buffer = per_thread_operations_buffer, .section = patch.sections.items[task_idx], .target_dir = target_dir, .are_sections_done = &are_sections_done, .sections_remaining = &sections_remaining, .per_thread_patch_files = per_thread_patch_files, .task = ThreadPool.Task{ .callback = ApplyPatchTask.applyPatch }, .file = patch.new.files.items[section.file_idx] };
+        tasks[task_idx] = .{ .per_thread_read_buffers = per_thread_read_buffer, .old_signature = patch.old, .anchored_blocks_map = anchored_blocks_map, .source_dir = source_dir, .per_thread_operations_buffer = per_thread_operations_buffer, .section = patch.sections.items[task_idx], .target_dir = target_dir, .are_sections_done = &are_sections_done, .sections_remaining = &sections_remaining, .per_thread_patch_files = per_thread_patch_files, .task = ThreadPool.Task{ .callback = ApplyPatchTask.applyPatch }, .file = patch.new.files.items[section.file_idx] };
 
         batch.push(ThreadPool.Batch.from(&tasks[task_idx].task));
     }
