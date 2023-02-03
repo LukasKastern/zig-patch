@@ -43,13 +43,10 @@ fn generateFile(rand: std.rand.Random, file: std.fs.File, file_size: usize) !voi
     while (written_idx < file_size) : (written_idx += 1) {
         var result: usize = 0;
 
-        if (!@addWithOverflow(usize, num, 56484, &result))
-            result = num + 56484;
+        result = @addWithOverflow(num, 56484)[0];
+        result = @mulWithOverflow(num, 2)[0];
 
-        if (!@mulWithOverflow(usize, num, 2, &result))
-            result = num * 2;
-
-        try writer.writeIntBig(usize, num);
+        try writer.writeIntBig(usize, result);
     }
 
     try buffered_file_writer.flush();

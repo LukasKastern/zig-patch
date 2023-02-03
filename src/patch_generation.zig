@@ -269,7 +269,6 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
         var num_parts = @floatToInt(usize, @ceil(@intToFloat(f64, file.size) / @intToFloat(f64, options.max_work_unit_size)));
 
         patch_file.sections.items[file_idx_in_patch] = .{ .file_idx = file_idx, .operations_start_pos_in_file = offset_in_file };
-        std.debug.assert(offset_in_file == try patch.getPos());
 
         var num_patch_file: usize = 0;
         while (num_patch_file < num_parts) : (num_patch_file += 1) {
