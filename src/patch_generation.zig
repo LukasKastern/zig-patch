@@ -385,6 +385,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
                     switch (operation) {
                         .Data => |data| {
                             var blocks_in_data_op = @ceil(@intToFloat(f64, data.len) / @intToFloat(f64, BlockSize));
+                            // std.log.info("Data found in {} and part {}, blocks: {}", .{ self.file_info.file_idx, self.file_info.file_part_idx, blocks_in_data_op });
                             changed_blocks.* += @floatToInt(usize, blocks_in_data_op);
                             total_blocks.* += @floatToInt(usize, blocks_in_data_op);
                         },

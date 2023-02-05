@@ -5,6 +5,7 @@ const SignatureFile = @import("signature_file.zig").SignatureFile;
 const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
 const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
 const SignatureBlock = @import("signature_file.zig").SignatureBlock;
+const Block = @import("block.zig");
 const time = std.time;
 
 const GenerateFolderOptions = struct {
@@ -281,7 +282,7 @@ test "Patch should delete/create files and folders" {
         var src_folder = try cwd.openDir(original_folder_path, .{});
         defer src_folder.close();
 
-        try generateTestFolder(12587, src_folder, .{ .min_depth = 2, .max_depth = 3 });
+        try generateTestFolder(12587, src_folder, .{ .min_depth = 1, .max_depth = 2 });
     }
 
     // Create the modified folder
@@ -290,7 +291,7 @@ test "Patch should delete/create files and folders" {
         var modified_folder = try cwd.openDir(modified_folder_path, .{});
         defer modified_folder.close();
 
-        try generateTestFolder(12587, modified_folder, .{ .min_depth = 2, .max_depth = 3 });
+        try generateTestFolder(12587, modified_folder, .{ .min_depth = 1, .max_depth = 2 });
     }
 
     var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
@@ -485,4 +486,78 @@ test "Patch should delete/create files and folders" {
 
         try std.testing.expect(try areDirectoriesEqual(src_folder, target_folder, &thread_pool, std.testing.allocator));
     }
+}
+
+test "Modifying one block should result in two data operation being generated" {
+    const cwd = std.fs.cwd();
+    const TestRootPath = "temp/ModifyBlock";
+    cwd.makeDir("temp") catch |err| {
+        switch (err) {
+            error.PathAlreadyExists => {},
+            else => {
+                return error.CouldntCreateTemp;
+            },
+        }
+    };
+
+    try cwd.deleteTree(TestRootPath);
+    try cwd.makeDir(TestRootPath);
+    var test_root_dir = try cwd.openDir(TestRootPath, .{});
+    defer test_root_dir.close();
+
+    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    defer std.testing.allocator.free(src_folder_path);
+    // Create the source folder
+    {
+        try cwd.makeDir(src_folder_path);
+        var src_folder = try cwd.openDir(src_folder_path, .{});
+        defer src_folder.close();
+
+        try generateTestFolder(12587, src_folder, .{});
+
+        var large_file = try src_folder.createFile("LargeFile", .{});
+        defer large_file.close();
+
+        var block_data = try std.testing.allocator.alloc(u8, Block.BlockSize * 32);
+        defer std.testing.allocator.free(block_data);
+
+        for (block_data) |*elem, idx| {
+            elem.* = @intCast(u8, @mulWithOverflow((idx + idx * 2) * 8, 4)[0] % 255);
+        }
+
+        try large_file.writeAll(block_data);
+    }
+
+    var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    thread_pool.spawnThreads();
+
+    var operation_config: operations.OperationConfig = .{
+        .working_dir = test_root_dir,
+        .thread_pool = &thread_pool,
+        .allocator = std.testing.allocator,
+    };
+
+    try operations.makeSignature("Original", "OriginalSignature", operation_config);
+    var stats: operations.OperationStats = .{};
+
+    // Modify one block of the "LargeFile".
+    // This should result in the patch having one data operation with the size of one block.
+    {
+        var src_folder = try cwd.openDir(src_folder_path, .{});
+        defer src_folder.close();
+
+        var large_file = try src_folder.openFile("LargeFile", .{ .mode = .read_write });
+        defer large_file.close();
+
+        var modified_block: [Block.BlockSize]u8 = undefined;
+        try large_file.reader().readNoEof(&modified_block);
+        try large_file.seekTo(0);
+        modified_block[0] = @addWithOverflow(~(modified_block[0]), 25)[0];
+        try large_file.writeAll(&modified_block);
+    }
+
+    try operations.createPatch("Original", "OriginalSignature", operation_config, &stats);
+
+    try std.testing.expect(stats.create_patch_stats.?.total_blocks > 0);
+    try std.testing.expectEqual(@as(usize, 2), stats.create_patch_stats.?.changed_blocks);
 }

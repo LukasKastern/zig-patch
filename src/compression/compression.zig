@@ -163,7 +163,7 @@ pub const Compression = struct {
                     BrotliCompression.deinitInflateImpl(infalting.impl);
                 },
                 .Zlib => {
-                    return ZlibCompression.deinitInflateImpl(infalting.impl);
+                    ZlibCompression.deinitInflateImpl(infalting.impl);
                 },
                 else => {},
             }

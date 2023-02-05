@@ -78,11 +78,17 @@ pub const AnchoredBlocksMap = struct {
         return self.all_blocks.items[start_idx + block_idx];
     }
 
-    pub fn getAnchoredBlock(self: Self, hash: BlockHash, preferred_file_idx: usize) ?AnchoredBlock {
+    pub fn getAnchoredBlock(self: Self, hash: BlockHash, preferred_file_idx: usize, short_size: usize) ?AnchoredBlock {
         var best_block: ?AnchoredBlock = null;
 
         if (self.underlying_hash_map.get(hash.weak_hash)) |blocks| {
             for (blocks.items) |block| {
+
+                // Only match blocks with the same length.
+                if (block.short_size != short_size) {
+                    continue;
+                }
+
                 const strong_hash_matches = std.mem.eql(u8, &block.hash.strong_hash, &hash.strong_hash);
 
                 if (strong_hash_matches and (best_block == null or block.file_index == preferred_file_idx)) {
@@ -131,11 +137,14 @@ pub const AnchoredBlocksMap = struct {
             var file_index = block.file_idx;
             var block_index = block.block_idx;
 
+            var file = signature_file.files.items[block.file_idx];
+            var left_over_bytes = std.math.min(BlockSize, file.size - BlockSize * block.block_idx);
+
             // zig fmt: off
             var anchored_block: AnchoredBlock = .{
                 .file_index = file_index,
                 .block_index = block_index,
-                .short_size = 0,// @intCast(usize, BlockSize - std.math.min(BlockSize, @intCast(usize, file.size - @intCast(usize, byte_offset)))),
+                .short_size = BlockSize - left_over_bytes,
                 .hash = block.hash
             };
             // zig fmt: on
@@ -198,7 +207,7 @@ test "Simple signature file should be anchored" {
     defer anchored_hash_map.deinit();
 
     for (hashes) |hash| {
-        if (anchored_hash_map.getAnchoredBlock(hash, 0)) |block| {
+        if (anchored_hash_map.getAnchoredBlock(hash, 0, 0)) |block| {
             try std.testing.expectEqual(hash.weak_hash, block.hash.weak_hash);
             try std.testing.expectEqualSlices(u8, &hash.strong_hash, &block.hash.strong_hash);
         } else {
@@ -254,7 +263,7 @@ test "Blocks with same strong hash should be picked based on the preferred file"
 
     {
         var hash = hashes[0];
-        if (anchored_hash_map.getAnchoredBlock(hash, 0)) |block| {
+        if (anchored_hash_map.getAnchoredBlock(hash, 0, 0)) |block| {
             try std.testing.expectEqual(hash.weak_hash, block.hash.weak_hash);
             try std.testing.expectEqualSlices(u8, &hash.strong_hash, &block.hash.strong_hash);
             try std.testing.expectEqual(block.file_index, 0);
@@ -266,7 +275,7 @@ test "Blocks with same strong hash should be picked based on the preferred file"
     // Same hash but prefer second file
     {
         var hash = hashes[0];
-        if (anchored_hash_map.getAnchoredBlock(hash, 1)) |block| {
+        if (anchored_hash_map.getAnchoredBlock(hash, 1, 0)) |block| {
             try std.testing.expectEqual(hash.weak_hash, block.hash.weak_hash);
             try std.testing.expectEqualSlices(u8, &hash.strong_hash, &block.hash.strong_hash);
             try std.testing.expectEqual(block.file_index, 1);

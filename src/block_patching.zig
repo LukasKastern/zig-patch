@@ -42,6 +42,8 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
             rolling_hash.next(buffer, tail - 1, head - 1);
         }
 
+        std.debug.assert(head - tail <= BlockSize);
+
         var hash = rolling_hash.hash;
 
         var known_block: ?AnchoredBlock = null;
@@ -54,13 +56,17 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
 
             std.crypto.hash.Md5.hash(buffer[tail..head], &block_hash.strong_hash, .{});
 
+            var block_size = head - tail;
+            var short_size = BlockSize - block_size;
+
             //TODO: Add the preferred file idx here (lukas)
-            known_block = block_map.getAnchoredBlock(block_hash, 0);
+            known_block = block_map.getAnchoredBlock(block_hash, 0, short_size);
         }
 
         if (known_block) |block| {
             if (tail != owed_data_tail) {
                 try patch_operations.append(.{ .Data = buffer[owed_data_tail..tail] });
+                // std.log.err("Appending OwedTail {}:{}", .{ owed_data_tail, tail });
             }
 
             //TODO: Check if last operation is the same. If so merge span. (lukas)
@@ -80,6 +86,8 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
                 var slice = buffer[owed_data_tail..tail];
 
                 try patch_operations.append(.{ .Data = slice });
+
+                // std.log.err("Appending Block {}:{}", .{ owed_data_tail, tail });
                 owed_data_tail = tail;
             }
         }
