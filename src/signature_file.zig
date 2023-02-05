@@ -166,7 +166,7 @@ pub const SignatureFile = struct {
         var block_idx: usize = 0;
 
         while (block_idx < num_blocks) : (block_idx += 1) {
-            if (block_idx_in_file * BlockSize > self.files.items[file_idx].size) {
+            if (block_idx_in_file * BlockSize >= self.files.items[file_idx].size) {
                 file_idx += 1;
                 block_idx_in_file = 0;
             }
