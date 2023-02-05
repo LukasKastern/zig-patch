@@ -47,6 +47,7 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
         var known_block: ?AnchoredBlock = null;
 
         if (block_map.hasAnchoredBlocksForWeakHash(hash)) {
+            @setRuntimeSafety(false);
             // Hash found. Calculate MD5 and see if we match with a known block.
 
             var block_hash: BlockHash = .{ .weak_hash = hash, .strong_hash = undefined };

@@ -1,4 +1,5 @@
 const std = @import("std");
+const zlib = @import("third_party/zig-zlib/zlib.zig");
 
 pub fn build(b: *std.build.Builder) void {
     // Standard target options allows the person running `zig build` to choose
@@ -9,12 +10,9 @@ pub fn build(b: *std.build.Builder) void {
 
     // Standard release options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
+    const mode = b.standardOptimizeOption(.{});
 
-    var brotli = b.addStaticLibrary("Brotli", null);
-    brotli.setTarget(target);
-    brotli.setBuildMode(mode);
-    // brotli.install();
+    var brotli = b.addStaticLibrary(.{ .name = "Brotli", .target = target, .optimize = .ReleaseFast });
 
     brotli.addCSourceFiles(&.{
         "third_party\\brotli-master\\c\\common\\constants.c",
@@ -55,13 +53,15 @@ pub fn build(b: *std.build.Builder) void {
     brotli.linkLibC();
     brotli.install();
 
-    const exe = b.addExecutable("wharf-zig", "src/main.zig");
+    const exe = b.addExecutable(.{ .name = "wharf-zig", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = mode });
+
     exe.addIncludePath("third_party\\brotli-master\\c\\include");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
+    exe.addIncludePath("third_party\\zig-zlib\\zlib");
     exe.install();
 
+    var lib = zlib.create(b, target, mode);
     exe.linkLibrary(brotli);
+    exe.linkLibrary(lib.step);
 
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
@@ -72,15 +72,18 @@ pub fn build(b: *std.build.Builder) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const test_exe = b.addTestExe("test", "src/main.zig");
+    const test_exe = b.addTest(.{ .name = "test", .target = target, .optimize = mode, .kind = .test_exe, .root_source_file = .{ .path = "src/main.zig" } });
     test_exe.linkLibrary(brotli);
     test_exe.addIncludePath("third_party\\brotli-master\\c\\include");
+    test_exe.addIncludePath("third_party\\zig-zlib\\zlib");
+
+    test_exe.linkLibrary(lib.step);
 
     const install_test = b.addInstallArtifact(test_exe);
 
     { // >>> TEST - BUILD ONLY >>>
-        test_exe.setTarget(target);
-        test_exe.setBuildMode(mode);
+        // test_exe.setTarget(target);
+        // test_exe.setBuildMode(mode);
 
         const install_test_step = b.step("build-test", "Build unit tests");
         install_test_step.dependOn(&install_test.step);

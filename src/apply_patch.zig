@@ -89,7 +89,10 @@ const ApplyPatchTask = struct {
 
     fn applyPatch(task: *ThreadPool.Task) void {
         var apply_patch_task_data = @fieldParentPtr(Self, "task", task);
-        applyPatchImpl(apply_patch_task_data) catch unreachable;
+        applyPatchImpl(apply_patch_task_data) catch |e| {
+            std.log.err("Error occurred while applying patch, error={s}", .{@errorName(e)});
+            unreachable;
+        };
     }
 
     fn applyPatchImpl(self: *Self) !void {
@@ -127,7 +130,7 @@ const ApplyPatchTask = struct {
             var compressed_data_buffer = try operations_allocator.alloc(u8, compressed_section_size);
             try file_reader.readNoEof(compressed_data_buffer);
 
-            var inflating = try Compression.Infalting.init(.Brotli, operations_allocator);
+            var inflating = try Compression.Infalting.init(Compression.Default, operations_allocator);
             defer inflating.deinit();
 
             var inflated_buffer = try operations_allocator.alloc(u8, PatchGeneration.DefaultMaxWorkUnitSize + 256);

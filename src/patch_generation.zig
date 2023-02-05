@@ -110,6 +110,7 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         max_work_unit_size: usize,
         fallback_allocator: std.mem.Allocator,
         per_thread_compression_buffers: [][]u8,
+        per_thread_deflate: []Compression.Deflating,
 
         fn write(patch_file_io: *PatchFileIO, patch_data: PatchFileData) error{WritePatchError}!void {
             var self = @fieldParentPtr(@This(), "file_io", patch_file_io);
@@ -126,15 +127,19 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
             var fixed_buffer_stream = std.io.fixedBufferStream(data[0..]);
             var fixed_buffer_writer = fixed_buffer_stream.writer();
 
+            // Serialize all operations into our fixed_memory_buffer.
+            // We do not write them to the file directly since we first want to have the data go through our compression.
             BlockPatching.saveOperations(patch_data.operations, fixed_buffer_writer) catch return error.WritePatchError;
+
+            // var deflating = self.per_thread_deflate[ThreadPool.Thread.current.?.idx];
 
             var deflating_stack_allocator = std.heap.stackFallback(DefaultMaxWorkUnitSize * 3, self.fallback_allocator);
             var deflating_allocator = deflating_stack_allocator.get();
 
-            var deflating = Compression.Deflating.init(.Brotli, deflating_allocator) catch return error.WritePatchError;
+            var deflating = Compression.Deflating.init(Compression.Default, deflating_allocator) catch return error.WritePatchError;
             defer deflating.deinit();
 
-            var deflated_bufer = compression_allocator.alloc(u8, self.max_work_unit_size + 256) catch return error.WritePatchError;
+            var deflated_bufer = compression_allocator.alloc(u8, self.max_work_unit_size + 1024) catch return error.WritePatchError;
 
             var deflated_data = deflating.deflateBuffer(fixed_buffer_stream.buffer[0..fixed_buffer_stream.pos], deflated_bufer) catch return error.WritePatchError;
 
@@ -172,6 +177,19 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         }
     }
 
+    var per_thread_deflate = try allocator.alloc(Compression.Deflating, thread_pool.max_threads);
+    defer allocator.free(per_thread_deflate);
+
+    for (per_thread_deflate) |*deflate| {
+        deflate.* = try Compression.Deflating.init(Compression.Default, allocator);
+    }
+
+    defer {
+        for (per_thread_deflate) |deflate| {
+            deflate.deinit();
+        }
+    }
+
     // zig fmt: off
     var staging_folder_io: PerPatchPartStagingFolderIO = .{ 
         .signature_file = new_signature,
@@ -185,6 +203,7 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         .max_work_unit_size = options.max_work_unit_size,
         .per_thread_compression_buffers = per_thread_compression_buffers,
         .fallback_allocator = allocator,
+        .per_thread_deflate = per_thread_deflate,
     };
     // zig fmt: on
 
@@ -342,6 +361,8 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
         }
 
         fn generatePatchImpl(self: *Self) !void {
+            @setRuntimeSafety(false);
+
             var buffer = self.per_thread_buffers[ThreadPool.Thread.current.?.idx];
             var read_len = try self.io.read_patch_file(self.io, self.file_info, buffer);
 

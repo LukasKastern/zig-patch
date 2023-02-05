@@ -74,7 +74,7 @@
         "type": "cppvsdbg"
       },
       "request": "launch",
-      "program": "${workspaceFolder}/zig-out/bin/test",
+      "program": "${workspaceFolder}/zig-out/bin/test.exe",
       "args": [
         "zig"
       ],

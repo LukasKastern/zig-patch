@@ -58,6 +58,7 @@ pub fn init(config: Config) ThreadPool {
 const native_arch = builtin.cpu.arch;
 
 pub extern "kernel32" fn SetThreadAffinityMask(threadHandle: std.os.windows.HANDLE, affinityMask: std.os.windows.DWORD_PTR) std.os.windows.DWORD_PTR;
+pub extern "kernel32" fn SetThreadPriority(threadHandle: std.os.windows.HANDLE, priority: c_int) std.os.windows.DWORD_PTR;
 
 pub fn printJobQueues(self: *ThreadPool) void {
     var threadPtr = self.threads.load(.Acquire);
@@ -104,7 +105,9 @@ pub fn spawnThreads(self: *ThreadPool) void {
             }
         }
 
-        thread.setName((std.fmt.bufPrint(&threadNamingBuffer, "Worked Thread #{}", .{numSpawned}) catch unreachable)) catch unreachable;
+        // _ = SetThreadPriority(thread.getHandle(), 1);
+
+        thread.setName((std.fmt.bufPrint(&threadNamingBuffer, "Worker #{}", .{numSpawned}) catch unreachable)) catch unreachable;
         thread.detach();
     }
 

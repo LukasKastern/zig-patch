@@ -103,7 +103,7 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
 
     var changed_blocks_percentage = @intToFloat(f64, create_patch_stats.changed_blocks) / @intToFloat(f64, total_blocks) * 100;
 
-    std.debug.print("Created Patch in {d:2}ms - {d:.3}% ({}/{}) of blocks changed", .{ stats.total_operation_time, changed_blocks_percentage, create_patch_stats.changed_blocks, create_patch_stats.total_blocks });
+    std.log.info("Created Patch in {d:2}ms - {d:.3}% ({}/{}) of blocks changed", .{ stats.total_operation_time, changed_blocks_percentage, create_patch_stats.changed_blocks, create_patch_stats.total_blocks });
 }
 
 fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
@@ -198,6 +198,11 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
     });
 }
 
+pub const std_options = struct {
+    // Set the log level to info
+    pub const log_level = .info;
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -250,5 +255,3 @@ test {
     std.testing.refAllDecls(@import("compression/compression.zig"));
     std.testing.refAllDecls(@import("e2e_tests.zig"));
 }
-
-//
