@@ -488,7 +488,7 @@ test "Patch should delete/create files and folders" {
     }
 }
 
-test "Modifying one block should result in two data operation being generated" {
+test "Modifying one block should result in one data operation being generated" {
     const cwd = std.fs.cwd();
     const TestRootPath = "temp/ModifyBlock";
     cwd.makeDir("temp") catch |err| {
@@ -507,7 +507,9 @@ test "Modifying one block should result in two data operation being generated" {
 
     var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
     defer std.testing.allocator.free(src_folder_path);
-    // Create the source folder
+
+    var block_data = try std.testing.allocator.alloc(u8, Block.BlockSize * 32);
+    defer std.testing.allocator.free(block_data);
     {
         try cwd.makeDir(src_folder_path);
         var src_folder = try cwd.openDir(src_folder_path, .{});
@@ -518,12 +520,10 @@ test "Modifying one block should result in two data operation being generated" {
         var large_file = try src_folder.createFile("LargeFile", .{});
         defer large_file.close();
 
-        var block_data = try std.testing.allocator.alloc(u8, Block.BlockSize * 32);
-        defer std.testing.allocator.free(block_data);
+        var prng = std.rand.DefaultPrng.init(14123);
+        var random = prng.random();
 
-        for (block_data) |*elem, idx| {
-            elem.* = @intCast(u8, @mulWithOverflow((idx + idx * 2) * 8, 4)[0] % 255);
-        }
+        random.bytes(block_data);
 
         try large_file.writeAll(block_data);
     }
@@ -559,5 +559,71 @@ test "Modifying one block should result in two data operation being generated" {
     try operations.createPatch("Original", "OriginalSignature", operation_config, &stats);
 
     try std.testing.expect(stats.create_patch_stats.?.total_blocks > 0);
-    try std.testing.expectEqual(@as(usize, 2), stats.create_patch_stats.?.changed_blocks);
+    try std.testing.expectEqual(@as(usize, 1), stats.create_patch_stats.?.changed_blocks);
+}
+
+test "Changing file size should result in one data operation being generated" {
+    const cwd = std.fs.cwd();
+    const TestRootPath = "temp/ModifyBlock2";
+    cwd.makeDir("temp") catch |err| {
+        switch (err) {
+            error.PathAlreadyExists => {},
+            else => {
+                return error.CouldntCreateTemp;
+            },
+        }
+    };
+
+    try cwd.deleteTree(TestRootPath);
+    try cwd.makeDir(TestRootPath);
+    var test_root_dir = try cwd.openDir(TestRootPath, .{});
+    defer test_root_dir.close();
+
+    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    defer std.testing.allocator.free(src_folder_path);
+
+    var block_data = try std.testing.allocator.alloc(u8, Block.BlockSize * 256);
+    defer std.testing.allocator.free(block_data);
+    var prng = std.rand.DefaultPrng.init(14123);
+    var random = prng.random();
+
+    random.bytes(block_data);
+
+    try cwd.makeDir(src_folder_path);
+    var src_folder = try cwd.openDir(src_folder_path, .{});
+    defer src_folder.close();
+
+    {
+        try generateTestFolder(12587, src_folder, .{});
+
+        var large_file = try src_folder.createFile("LargeFile", .{});
+        defer large_file.close();
+
+        try large_file.writeAll(block_data);
+    }
+
+    var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    thread_pool.spawnThreads();
+
+    var operation_config: operations.OperationConfig = .{
+        .working_dir = test_root_dir,
+        .thread_pool = &thread_pool,
+        .allocator = std.testing.allocator,
+    };
+
+    try operations.makeSignature("Original", "OriginalSignature", operation_config);
+
+    {
+        var modified_large_file = try src_folder.createFile("LargeFileModified", .{});
+        defer modified_large_file.close();
+
+        try modified_large_file.writeAll(block_data[1 .. block_data.len - 1]);
+    }
+
+    var stats: operations.OperationStats = .{};
+
+    try operations.createPatch("Original", "OriginalSignature", operation_config, &stats);
+
+    try std.testing.expect(stats.create_patch_stats.?.total_blocks > 0);
+    try std.testing.expectEqual(@as(usize, 1), stats.create_patch_stats.?.changed_blocks);
 }
