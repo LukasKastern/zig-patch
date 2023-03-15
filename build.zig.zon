@@ -5,7 +5,11 @@
     .dependencies = .{
         .zig_clap = .{
             .url = "https://github.com/Hejsil/zig-clap/archive/cb13519431b916c05c6c783cb0ce3b232be5e400.tar.gz",
-            .hash = "1220e0fd678f5f684b296a260950a36de86de2b78d0664f6206510de4cb32e54f518"
+            .hash = "1220e0fd678f5f684b296a260950a36de86de2b78d0664f6206510de4cb32e54f518",
+        },
+        .brotli = .{
+            .url = "https://github.com/LukasKastern/brotli/archive/abd29e993a419e61ce9954b2a071e978e9d6c9e7.tar.gz",
+            .hash = "12208fdc7a6479606f4b6648b6433327250bf8d256eb8a216fa5a4cde1dfb8cc809e",
         },
     },
 }
