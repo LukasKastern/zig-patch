@@ -115,17 +115,20 @@ pub const SignatureFile = struct {
 
             var processed_blocks: usize = 0;
             while (processed_blocks < CalculateHashData.BlocksPerBatchOfWork) : (processed_blocks += 1) {
-                var remaining_bytes = read_bytes - processed_blocks * BlockSize;
+                const block_start_idx_in_buffer = processed_blocks * BlockSize;
+                var remaining_bytes = read_bytes - block_start_idx_in_buffer;
+
+                var block_data = buffer[block_start_idx_in_buffer .. block_start_idx_in_buffer + std.math.min(BlockSize, remaining_bytes)];
 
                 var rolling_hash: RollingHash = .{};
-                rolling_hash.recompute(buffer[0..read_bytes]);
+                rolling_hash.recompute(block_data);
 
                 var block_hash: BlockHash = .{
                     .weak_hash = rolling_hash.hash,
                     .strong_hash = undefined,
                 };
 
-                std.crypto.hash.Md5.hash(buffer[0..std.math.min(BlockSize, remaining_bytes)], &block_hash.strong_hash, .{});
+                std.crypto.hash.Md5.hash(block_data, &block_hash.strong_hash, .{});
 
                 var signature_block: SignatureBlock = .{ .file_idx = self.file_idx, .block_idx = start_block_idx + processed_blocks, .hash = block_hash };
 
