@@ -7,9 +7,9 @@
       "windows": {
         "type": "cppvsdbg"
       },
-      "request": "launch",
+      "request": "launch",  
       "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": ["create", "--source_folder", "E:/Personal/wharf-zig/wharf-zig/zig-out/bin/PatchedBuild"],
+      "args": ["create", "--source_folder", "${input:selectFolder}"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -53,7 +53,7 @@
       },
       "request": "launch",
       "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": ["apply", "--patch", "${workspaceFolder}/zig-out/bin/Patch.pwd", "--target_folder", "C:/wharf-zig/zig-out/bin/PatchedBuild"],
+      "args": ["apply", "--patch", "${workspaceFolder}/zig-out/bin/Patch.pwd", "--target_folder", "${workspaceFolder}/zig-out/bin/PatchedBuild"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -127,6 +127,14 @@
         "cwd": "${workspaceFolder}",
         "useSingleResult": true
       }
+    },
+    {
+      "id": "selectFolder",
+      "type": "promptString",
+      "description": "Enter a folder path",
     }
-  ]
+  ],
+  "options": {
+    "cwd": "${workspaceFolder}"
+  }
 }

@@ -10,7 +10,6 @@
             "args": [
                 "build",
                 "-Doptimize=ReleaseFast",
-
             ],
             "group": {
                 "kind": "build",
