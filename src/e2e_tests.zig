@@ -124,7 +124,7 @@ fn areDirectoriesEqual(lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *T
         return false;
     }
 
-    for (lhs_directories.items) |lhs_directory, idx| {
+    for (lhs_directories.items, 0..) |lhs_directory, idx| {
         var rhs_directory = rhs_directories.items[idx];
 
         if (!std.mem.eql(u8, lhs_directory.path, rhs_directory.path)) {
@@ -143,7 +143,7 @@ fn areDirectoriesEqual(lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *T
         return false;
     }
 
-    for (lhs_files.items) |lhs_file, idx| {
+    for (lhs_files.items, 0..) |lhs_file, idx| {
         var rhs_file = rhs_files.items[idx];
 
         if (!std.mem.eql(u8, lhs_file.name, rhs_file.name)) {
@@ -617,7 +617,7 @@ test "Changing file size should result in one data operation being generated" {
         var modified_large_file = try src_folder.createFile("LargeFileModified", .{});
         defer modified_large_file.close();
 
-        try modified_large_file.writeAll(block_data[1 .. block_data.len - 1]);
+        try modified_large_file.writeAll(block_data[0 .. block_data.len - 1]);
     }
 
     var stats: operations.OperationStats = .{};

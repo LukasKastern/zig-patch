@@ -103,6 +103,7 @@ pub fn build(b: *std.build.Builder) void {
         const run_test_step = b.step("test", "Run unit tests");
         run_test_step.dependOn(&run_test_cmd.step);
     } // <<< TEST - BUILD AND RUN <<<
-
-    exe.addPackagePath("clap", "third_party/zig-clap/clap.zig");
+    
+    var clap = b.dependency("zig_clap", .{}).module("clap");
+    exe.addModule("clap", clap);
 }

@@ -1,0 +1,11 @@
+.{
+    .name = "wharf-zig",
+    .version = "0.1.0",
+
+    .dependencies = .{
+        .zig_clap = .{
+            .url = "https://github.com/Hejsil/zig-clap/archive/cb13519431b916c05c6c783cb0ce3b232be5e400.tar.gz",
+            .hash = "1220e0fd678f5f684b296a260950a36de86de2b78d0664f6206510de4cb32e54f518"
+        },
+    },
+}

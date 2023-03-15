@@ -475,17 +475,17 @@ test "signature file should be same after serialization/deserialization" {
     try std.testing.expectEqual(signature_file.files.items.len, deserialized_signature_file.files.items.len);
     try std.testing.expectEqual(signature_file.blocks.items.len, deserialized_signature_file.blocks.items.len);
 
-    for (signature_file.directories.items) |directory, idx| {
+    for (signature_file.directories.items, 0..) |directory, idx| {
         try std.testing.expectEqual(directory.permissions, deserialized_signature_file.directories.items[idx].permissions);
         try std.testing.expectEqualSlices(u8, directory.path, deserialized_signature_file.directories.items[idx].path);
     }
 
-    for (signature_file.files.items) |file, idx| {
+    for (signature_file.files.items, 0..) |file, idx| {
         try std.testing.expectEqual(file.permissions, deserialized_signature_file.files.items[idx].permissions);
         try std.testing.expectEqualSlices(u8, file.name, deserialized_signature_file.files.items[idx].name);
     }
 
-    for (signature_file.blocks.items) |block, idx| {
+    for (signature_file.blocks.items, 0..) |block, idx| {
         try std.testing.expectEqual(block.file_idx, deserialized_signature_file.blocks.items[idx].file_idx);
         try std.testing.expectEqual(block.block_idx, deserialized_signature_file.blocks.items[idx].block_idx);
 

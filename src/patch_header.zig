@@ -176,7 +176,7 @@ test "deserialized patch header should match original header" {
 
     try std.testing.expectEqual(patch_header.sections.items.len, deserialized_patch_header.sections.items.len);
 
-    for (patch_header.sections.items) |section, idx| {
+    for (patch_header.sections.items, 0..) |section, idx| {
         var deserialized_section = deserialized_patch_header.sections.items[idx];
         try std.testing.expectEqual(section.file_idx, deserialized_section.file_idx);
         try std.testing.expectEqual(section.operations_start_pos_in_file, deserialized_section.operations_start_pos_in_file);

@@ -68,7 +68,7 @@
       "preLaunchTask": "build",
     },
     {
-      "name": "structure tests",
+      "name": "run tests",
       "type": "cppdbg",
       "windows": {
         "type": "cppvsdbg"

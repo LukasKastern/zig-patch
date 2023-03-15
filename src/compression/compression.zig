@@ -189,7 +189,7 @@ test "Deflated then Infalted buffer should be the same" {
         var out_buffer: [2048 + 64]u8 = undefined;
         var deflated_elments: []u8 = undefined;
 
-        for (input) |*item| {
+        for (&input) |*item| {
             item.* = rand.int(u8);
         }
 

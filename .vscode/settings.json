@@ -1,7 +1,7 @@
 {
   "files.insertFinalNewline": true,
   "[zig]": {
-    "editor.defaultFormatter": "tiehuis.zig",
+    "editor.defaultFormatter": "ziglang.vscode-zig",
     "editor.formatOnSave": true,
     "editor.formatOnSaveMode": "file"
   },

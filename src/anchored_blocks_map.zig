@@ -39,7 +39,7 @@ pub const AnchoredBlocksMap = struct {
 
         var current_block_start: usize = 0;
 
-        for (self.block_start_by_file.items) |*element, idx| {
+        for (self.block_start_by_file.items, 0..) |*element, idx| {
             var file = signature_file.files.items[idx];
             element.* = current_block_start;
 

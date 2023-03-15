@@ -108,7 +108,7 @@ test "Operations for buffer without Reference should rebuild the original buffer
 
     var rand = std.rand.DefaultPrng.init(365654);
 
-    for (original_buffer) |*item, idx| {
+    for (original_buffer, 0..) |*item, idx| {
         item.* = rand.random().int(u8);
         rebuilt_buffer[idx] = 0;
     }
@@ -146,7 +146,7 @@ test "Operations for buffer without Reference should rebuild the original buffer
 
     var rand = std.rand.DefaultPrng.init(1238721);
 
-    for (original_buffer) |*item, idx| {
+    for (original_buffer, 0..) |*item, idx| {
         item.* = rand.random().int(u8);
         rebuilt_buffer[idx] = 0;
     }
@@ -280,7 +280,7 @@ test "operations should be same after deserialization" {
     try std.testing.expectEqual(written_end_pos, try stream.getPos());
     try std.testing.expectEqual(operations.items.len, loaded_operations.items.len);
 
-    for (operations.items) |operation, idx| {
+    for (operations.items, 0..) |operation, idx| {
         var loaded_operation = loaded_operations.items[idx];
 
         if (operation == .BlockRange) {

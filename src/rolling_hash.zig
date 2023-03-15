@@ -24,7 +24,7 @@ pub const RollingHash = struct {
         var b: u32 = 0;
 
         const span = @intCast(u32, block.len - 1);
-        for (block) |val, idx| {
+        for (block, 0..) |val, idx| {
             a +%= val;
 
             var index = (@intCast(u32, idx));
@@ -46,7 +46,7 @@ test "Recomputed hash should match rolling hash" {
 
     var rand = std.rand.DefaultPrng.init(365654);
 
-    for (buffer) |*item| {
+    for (&buffer) |*item| {
         item.* = rand.random().int(u8); // @truncate(u8, (idx * idx + 5) % 255);
     }
 
