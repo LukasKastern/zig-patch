@@ -73,12 +73,16 @@ pub const SignatureFile = struct {
     }
 
     const CalculateHashData = struct {
+
+        // We schedule our work in Batches that attempt to process this amount of blocks at once.
+        // This tries to strike a balance between repeated open/write/reads of files and the cost of hashing the content.
+        const BlocksPerBatchOfWork = 4;
+
         task: ThreadPool.Task,
-        block_idx: usize,
         blocks: *std.atomic.Atomic(usize),
-        are_blocks_done: *std.atomic.Atomic(u32),
+        are_batches_done: *std.atomic.Atomic(u32),
         file_idx: usize,
-        block_idx_in_file: usize,
+        batch_in_file: usize,
         signature_file: *SignatureFile,
         dir: std.fs.Dir,
 
@@ -93,34 +97,52 @@ pub const SignatureFile = struct {
 
         fn calculate_hash_impl(self: *Self) !void {
             const signature_file = self.signature_file.files.items[self.file_idx];
-            const read_offset = self.block_idx_in_file * BlockSize;
+
+            const start_block_idx = self.batch_in_file * CalculateHashData.BlocksPerBatchOfWork;
+            const read_offset = start_block_idx * BlockSize;
 
             var file = try self.dir.openFile(signature_file.name, .{});
             defer file.close();
 
-            var buffer: [BlockSize]u8 = undefined;
+            var buffer: [BlockSize * CalculateHashData.BlocksPerBatchOfWork]u8 = undefined;
             try file.seekTo(read_offset);
             var read_bytes = try file.read(&buffer);
 
-            var rolling_hash: RollingHash = .{};
-            rolling_hash.recompute(buffer[0..read_bytes]);
-
-            var block_hash: BlockHash = .{
-                .weak_hash = rolling_hash.hash,
-                .strong_hash = undefined,
-            };
-
-            std.crypto.hash.Md5.hash(buffer[0..read_bytes], &block_hash.strong_hash, .{});
-
-            var signature_block: SignatureBlock = .{ .file_idx = self.file_idx, .block_idx = self.block_idx_in_file, .hash = block_hash };
+            std.debug.assert(read_bytes > 0);
 
             var thread_idx = ThreadPool.Thread.current.?.idx;
             var hashes = &self.per_thread_block_hashes.items[thread_idx];
-            hashes.appendAssumeCapacity(signature_block);
+
+            var processed_blocks: usize = 0;
+            while (processed_blocks < CalculateHashData.BlocksPerBatchOfWork) : (processed_blocks += 1) {
+                const block_start_idx_in_buffer = processed_blocks * BlockSize;
+                var remaining_bytes = read_bytes - block_start_idx_in_buffer;
+
+                var block_data = buffer[block_start_idx_in_buffer .. block_start_idx_in_buffer + std.math.min(BlockSize, remaining_bytes)];
+
+                var rolling_hash: RollingHash = .{};
+                rolling_hash.recompute(block_data);
+
+                var block_hash: BlockHash = .{
+                    .weak_hash = rolling_hash.hash,
+                    .strong_hash = undefined,
+                };
+
+                std.crypto.hash.Md5.hash(block_data, &block_hash.strong_hash, .{});
+
+                var signature_block: SignatureBlock = .{ .file_idx = self.file_idx, .block_idx = start_block_idx + processed_blocks, .hash = block_hash };
+
+                hashes.appendAssumeCapacity(signature_block);
+
+                // If this was the last block break out of the batch.
+                if (remaining_bytes <= BlockSize) {
+                    break;
+                }
+            }
 
             if (self.blocks.fetchSub(1, .Release) == 1) {
-                self.are_blocks_done.store(1, .Release);
-                std.Thread.Futex.wake(self.are_blocks_done, 1);
+                self.are_batches_done.store(1, .Release);
+                std.Thread.Futex.wake(self.are_batches_done, 1);
             }
         }
     };
@@ -134,16 +156,28 @@ pub const SignatureFile = struct {
 
         try self.generateFromFolderImpl(root_dir, &empty_path);
 
+        var num_batches_of_work: usize = 0;
         var num_blocks: usize = 0;
 
         for (self.files.items) |signature_file| {
-            num_blocks += @floatToInt(usize, @ceil(@intToFloat(f64, signature_file.size) / BlockSize));
+            if (signature_file.size == 0) {
+                continue;
+            }
+
+            var blocks_in_file = @floatToInt(usize, @ceil(@intToFloat(f64, signature_file.size) / BlockSize));
+            num_blocks += blocks_in_file;
+
+            num_batches_of_work += blocks_in_file / CalculateHashData.BlocksPerBatchOfWork;
+
+            if (blocks_in_file % CalculateHashData.BlocksPerBatchOfWork != 0) {
+                num_batches_of_work += 1;
+            }
         }
 
-        var blocks_remaining = std.atomic.Atomic(usize).init(num_blocks);
-        var are_blocks_done = std.atomic.Atomic(u32).init(0);
+        var batches_remaining = std.atomic.Atomic(usize).init(num_batches_of_work);
+        var are_batches_done = std.atomic.Atomic(u32).init(0);
 
-        var tasks = try self.allocator.alloc(CalculateHashData, num_blocks);
+        var tasks = try self.allocator.alloc(CalculateHashData, num_batches_of_work);
         defer self.allocator.free(tasks);
 
         var per_thread_block_hashes = std.ArrayList(std.ArrayList(SignatureBlock)).init(self.allocator);
@@ -162,13 +196,14 @@ pub const SignatureFile = struct {
 
         var batch = ThreadPool.Batch{};
         var file_idx: usize = 0;
-        var block_idx_in_file: usize = 0;
-        var block_idx: usize = 0;
 
-        while (block_idx < num_blocks) : (block_idx += 1) {
-            if (block_idx_in_file * BlockSize >= self.files.items[file_idx].size) {
+        var batch_in_file: usize = 0;
+        var batch_idx: usize = 0;
+
+        while (batch_idx < num_batches_of_work) : (batch_idx += 1) {
+            if (batch_in_file * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= self.files.items[file_idx].size) {
                 file_idx += 1;
-                block_idx_in_file = 0;
+                batch_in_file = 0;
             }
 
             while (self.files.items[file_idx].size == 0) {
@@ -179,30 +214,28 @@ pub const SignatureFile = struct {
 
             std.debug.assert(current_file.size > 0);
 
-            tasks[block_idx] = CalculateHashData{
+            tasks[batch_idx] = CalculateHashData{
                 .task = ThreadPool.Task{ .callback = CalculateHashData.calculate_hash },
-                .block_idx = block_idx,
-                .blocks = &blocks_remaining,
-                .are_blocks_done = &are_blocks_done,
-
+                .blocks = &batches_remaining,
+                .are_batches_done = &are_batches_done,
                 .file_idx = file_idx,
-                .block_idx_in_file = block_idx_in_file,
+                .batch_in_file = batch_in_file,
                 .signature_file = self,
                 .per_thread_block_hashes = per_thread_block_hashes,
                 .dir = root_dir,
             };
 
-            batch.push(ThreadPool.Batch.from(&tasks[block_idx].task));
+            batch.push(ThreadPool.Batch.from(&tasks[batch_idx].task));
 
-            block_idx_in_file += 1;
+            batch_in_file += 1;
         }
 
         thread_pool.schedule(batch);
 
         try self.blocks.ensureTotalCapacity(num_blocks);
 
-        while (blocks_remaining.load(.Acquire) > 0 and are_blocks_done.load(.Acquire) == 0) {
-            std.Thread.Futex.wait(&are_blocks_done, 0);
+        while (batches_remaining.load(.Acquire) > 0 and are_batches_done.load(.Acquire) == 0) {
+            std.Thread.Futex.wait(&are_batches_done, 0);
         }
 
         for (per_thread_block_hashes.items) |item| {
