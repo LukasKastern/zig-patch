@@ -147,7 +147,7 @@ pub const SignatureFile = struct {
         }
     };
 
-    pub fn generateFromFolder(self: *SignatureFile, dir: std.fs.Dir, thread_pool: *ThreadPool) !void {
+    pub fn generateFromFolder(self: *SignatureFile, dir: std.fs.Dir, thread_pool: *ThreadPool, on_progress: ?*const fn (f32, ?[]const u8) void) !void {
         self.deallocateBuffers();
 
         var root_dir = dir;
@@ -234,8 +234,15 @@ pub const SignatureFile = struct {
 
         try self.blocks.ensureTotalCapacity(num_blocks);
 
-        while (batches_remaining.load(.Acquire) > 0 and are_batches_done.load(.Acquire) == 0) {
-            std.Thread.Futex.wait(&are_batches_done, 0);
+        var num_batches_remaining = batches_remaining.load(.Acquire);
+        while (num_batches_remaining > 0 and are_batches_done.load(.Acquire) == 0) {
+            if (on_progress) |progress_callback_unwrapped| {
+                var elapsed_progress = (1.0 - @intToFloat(f32, num_batches_remaining) / @intToFloat(f32, num_batches_of_work)) * 100;
+                progress_callback_unwrapped(elapsed_progress, "Hashing Blocks");
+            }
+
+            std.time.sleep(std.time.ns_per_ms * 100);
+            num_batches_remaining = batches_remaining.load(.Acquire);
         }
 
         for (per_thread_block_hashes.items) |item| {

@@ -13,6 +13,7 @@ const PatchHeader = @import("patch_header.zig").PatchHeader;
 const ApplyPatch = @import("apply_patch.zig");
 const operations = @import("operations.zig");
 const OperationStats = operations.OperationStats;
+const builtin = @import("builtin");
 
 const clap = @import("clap");
 
@@ -191,19 +192,51 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
         return;
     }
 
+    {
+        const stdout = std.io.getStdErr().writer();
+        try stdout.print("∙ Hashing {s}\n", .{parsed_args.args.source_folder.?});
+    }
+
+    const MakeSignaturePrintHelper = struct {
+        fn onMakeSignatureProgress(progress: f32, progress_str: ?[]const u8) void {
+            const stdout = std.io.getStdErr().writer();
+            stdout.print("\r{d:.2}%             ", .{progress}) catch {};
+
+            _ = progress_str;
+        }
+    };
+
+    var operation_stats: OperationStats = .{};
+
     try operations.makeSignature(parsed_args.args.source_folder.?, parsed_args.args.output_file.?, .{
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,
-    });
+        .progress_callback = MakeSignaturePrintHelper.onMakeSignatureProgress,
+    }, &operation_stats);
+
+    {
+        const stdout = std.io.getStdErr().writer();
+
+        var make_signature_stats = operation_stats.make_signature_stats.?;
+
+        var folder_size_GiB = @intToFloat(f32, make_signature_stats.total_signature_folder_size_bytes) / 1_073_741_824.0;
+
+        stdout.print("\r√ {d:.2}GiB ({} files, {} directories) @ {d:.2}s            \n", .{ folder_size_GiB, make_signature_stats.num_files, make_signature_stats.num_directories, operation_stats.total_operation_time / @intToFloat(f32, std.time.ms_per_s) }) catch {};
+    }
 }
 
 pub const std_options = struct {
-    // Set the log level to info
-    pub const log_level = .info;
+    // Set the log level to error
+    pub const log_level = .err;
 };
 
 pub fn main() !void {
+    // Enable utf-8 console output
+    if (builtin.os.tag == .windows) {
+        _ = std.os.windows.kernel32.SetConsoleOutputCP(65001);
+    }
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 

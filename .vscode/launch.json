@@ -9,7 +9,7 @@
       },
       "request": "launch",  
       "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": ["create", "--source_folder", "${input:selectFolder}"],
+      "args": ["create", "--source_folder", "${input:selectFolder}", "--signature_file", "D:/Projects/Personal/wharf-zig/zig-out/bin/Signature"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -31,18 +31,12 @@
       },
       "request": "launch",
       "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": ["make_signature", "--source_folder", "E:/JourneeDevelopment/Windows", "--output_file", "E:/JourneeDevelopment/Signature"],
+      "args": ["make_signature", "--source_folder", "D:/Users/Administrator/Downloads/Build2/Build", "--output_file", "D:/Projects/Personal/wharf-zig/zig-out/bin/Signature"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
       "externalConsole": false,
       "MIMode": "gdb",
-      "setupCommands": [
-        {
-          "text": "-enable-pretty-printing",
-          "ignoreFailures": true
-        }
-      ],
       "preLaunchTask": "build",
     },
     {

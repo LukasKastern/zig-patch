@@ -15,8 +15,15 @@ pub const OperationStats = struct {
         total_blocks: usize = 0,
     };
 
+    pub const MakeSignatureStats = struct {
+        total_signature_folder_size_bytes: usize = 0,
+        num_files: usize = 0,
+        num_directories: usize = 0,
+    };
+
     apply_patch_stats: ?ApplyPatchStats = null,
     create_patch_stats: ?CreatePatchStats = null,
+    make_signature_stats: ?MakeSignatureStats = null,
     total_operation_time: f64 = 0,
 };
 
@@ -24,7 +31,7 @@ pub const OperationConfig = struct {
     thread_pool: *ThreadPool,
     allocator: std.mem.Allocator,
     working_dir: std.fs.Dir,
-    operation_stats: OperationStats = .{},
+    progress_callback: ?*const fn (f32, ?[]const u8) void = null,
 };
 
 pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, config: OperationConfig) !void {
@@ -236,7 +243,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
         std.log.info("Generating Signature from {s}...", .{source_folder_path});
 
         var generate_signature_start_sample = timer.read();
-        try new_signature_file.generateFromFolder(open_dir, thread_pool);
+        try new_signature_file.generateFromFolder(open_dir, thread_pool, config.progress_callback);
         var generate_signature_finish_sample = timer.read();
 
         std.log.info("Generated Signature in {d:2}ms", .{(@intToFloat(f64, generate_signature_finish_sample) - @intToFloat(f64, generate_signature_start_sample)) / 1000000});
@@ -273,7 +280,10 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
     std.log.info("The patch was generated successfully", .{});
 }
 
-pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []const u8, config: OperationConfig) !void {
+pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []const u8, config: OperationConfig, stats: ?*OperationStats) !void {
+    var timer = try time.Timer.start();
+    var make_signature_start_sample = timer.read();
+
     var signature_file = try SignatureFile.init(config.allocator);
     defer signature_file.deinit();
 
@@ -283,7 +293,7 @@ pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []con
     var file = try config.working_dir.createFile(output_path, .{});
     defer file.close();
 
-    try signature_file.generateFromFolder(target_dir, config.thread_pool);
+    try signature_file.generateFromFolder(target_dir, config.thread_pool, config.progress_callback);
 
     const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
     var buffered_file_writer: BufferedFileWriter = .{
@@ -294,4 +304,24 @@ pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []con
 
     try signature_file.saveSignature(writer);
     try buffered_file_writer.flush();
+
+    var make_signature_finish_sample = timer.read();
+
+    if (stats) |*operation_stats| {
+        operation_stats.*.total_operation_time = (@intToFloat(f64, make_signature_finish_sample) - @intToFloat(f64, make_signature_start_sample)) / 1000000;
+
+        var total_signature_folder_size_bytes: usize = 0;
+
+        for (signature_file.files.items) |signature_file_elem| {
+            total_signature_folder_size_bytes += signature_file_elem.size;
+        }
+
+        var make_signature_stats: OperationStats.MakeSignatureStats = .{
+            .num_files = signature_file.files.items.len,
+            .num_directories = signature_file.directories.items.len,
+            .total_signature_folder_size_bytes = total_signature_folder_size_bytes,
+        };
+
+        operation_stats.*.make_signature_stats = make_signature_stats;
+    }
 }
