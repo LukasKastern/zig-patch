@@ -70,7 +70,7 @@ pub const NoOpCompression = struct {
 };
 
 pub const Compression = struct {
-    pub const Default = .Zlib;
+    pub const Default = .Brotli;
     pub const Deflating = struct {
         impl: *DeflateImpl,
         implementation_method: CompressionImplementation,
