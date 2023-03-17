@@ -90,13 +90,41 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         return;
     }
 
+    {
+        const stdout = std.io.getStdErr().writer();
+        try stdout.print("∙ Creating Patch For {s}\n", .{
+            parsed_args.args.source_folder.?,
+        });
+    }
+
+    const CreatePatchPrintHelper = struct {
+        fn onMakeSignatureProgress(progress: f32, progress_str: ?[]const u8) void {
+            const stdout = std.io.getStdErr().writer();
+
+            if (progress_str) |progress_str_value| {
+                var is_hashing_source_folder = std.mem.eql(progress_str_value, "Hashing");
+
+                if (!is_hashing_source_folder) {
+                    stdout.print("\r √ Hashing {s}              ", .{progress}) catch {};
+                }
+            }
+
+            stdout.print("\r{d:.2}%             ", .{progress}) catch {};
+
+            _ = progress_str;
+        }
+    };
+
     var stats: OperationStats = .{};
 
+    // zig fmt: off
     try operations.createPatch(folder.?, previous_signature, .{
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,
+        .progress_callback = CreatePatchPrintHelper.onMakeSignatureProgress
     }, &stats);
+    // zig fmt: on
 
     var create_patch_stats = stats.create_patch_stats.?;
 
