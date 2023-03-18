@@ -8,8 +8,8 @@
         "type": "cppvsdbg"
       },
       "request": "launch",  
-      "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": ["create", "--source_folder", "${input:selectFolder}", "--signature_file", "D:/Projects/Personal/wharf-zig/zig-out/bin/Signature"],
+      "program": "${workspaceFolder}/zig-out/bin/zig-patch.exe",
+      "args": ["create", "--source_folder", "${input:selectFolder}", "--signature_file", "D:/Projects/Personal/zig-patch/zig-out/bin/Signature"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -30,8 +30,8 @@
         "type": "cppvsdbg"
       },
       "request": "launch",
-      "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": ["make_signature", "--source_folder", "D:/Users/Administrator/Downloads/Build2/Build", "--output_file", "D:/Projects/Personal/wharf-zig/zig-out/bin/Signature"],
+      "program": "${workspaceFolder}/zig-out/bin/zig-patch.exe",
+      "args": ["make_signature", "--source_folder", "D:/Users/Administrator/Downloads/Build2/Build", "--output_file", "D:/Projects/Personal/zig-patch/zig-out/bin/Signature"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -46,7 +46,7 @@
         "type": "cppvsdbg"
       },
       "request": "launch",
-      "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
+      "program": "${workspaceFolder}/zig-out/bin/zig-patch.exe",
       "args": ["apply", "--patch", "${workspaceFolder}/zig-out/bin/Patch.pwd", "--target_folder", "D:/Users/Administrator/Downloads/PatchedFolder/Build"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",

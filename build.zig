@@ -53,7 +53,7 @@ pub fn build(b: *std.build.Builder) void {
     brotli.linkLibC();
     brotli.install();
 
-    const exe = b.addExecutable(.{ .name = "wharf-zig", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = mode });
+    const exe = b.addExecutable(.{ .name = "zig-patch", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = mode });
 
     exe.addIncludePath("third_party\\brotli-master\\c\\include");
     exe.addIncludePath("third_party\\zig-zlib\\zlib");
@@ -103,7 +103,7 @@ pub fn build(b: *std.build.Builder) void {
         const run_test_step = b.step("test", "Run unit tests");
         run_test_step.dependOn(&run_test_cmd.step);
     } // <<< TEST - BUILD AND RUN <<<
-    
+
     var clap = b.dependency("zig_clap", .{}).module("clap");
     exe.addModule("clap", clap);
 }

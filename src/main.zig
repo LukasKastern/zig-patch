@@ -31,7 +31,7 @@ fn shutdownThreadpool(task: *ThreadPool.Task) void {
 
 fn show_main_help() noreturn {
     std.debug.print("{s}", .{
-        \\wharf-zig creates delta diffs from build directories and applies them
+        \\zig-patch creates delta diffs from build directories and applies them
         \\
         \\Available commands: create, apply, help
         \\
@@ -40,9 +40,9 @@ fn show_main_help() noreturn {
         \\
         \\Examples:
         \\
-        \\ ./wharf-zig create 
-        \\ ./wharf-zig apply 
-        \\ ./wharf-zig make_signature
+        \\ ./zig-patch create 
+        \\ ./zig-patch apply 
+        \\ ./zig-patch make_signature
         \\
         \\
     });
@@ -214,7 +214,7 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
     }
 
     if (parsed_args.args.target_folder == null) {
-        std.log.err("No --target_folder <str> passed to apply. Please specify it to tell wharf-zig where to place the build.", .{});
+        std.log.err("No --target_folder <str> passed to apply. Please specify it to tell zig-patch where to place the build.", .{});
         return;
     }
 
@@ -288,12 +288,12 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
     }
 
     if (parsed_args.args.source_folder == null) {
-        std.log.err("No --source_folder <str> passed to make_signature. Please specify it to tell wharf-zig what folder to create the signature from.", .{});
+        std.log.err("No --source_folder <str> passed to make_signature. Please specify it to tell zig-patch what folder to create the signature from.", .{});
         return;
     }
 
     if (parsed_args.args.output_file == null) {
-        std.log.err("No --output_file <str> passed to make_signature. Please specify it to tell wharf-zig where to place the resulting signature file.", .{});
+        std.log.err("No --output_file <str> passed to make_signature. Please specify it to tell zig-patch where to place the resulting signature file.", .{});
         return;
     }
 
