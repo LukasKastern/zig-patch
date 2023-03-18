@@ -125,7 +125,7 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
     }
 
     if (validate_source_folder) {
-        if (source_folder == null or !patch.old.validateFolderMatchesSignature(source_folder.?)) {
+        if (source_folder == null or !@call(.never_inline, SignatureFile.validateFolderMatchesSignature, .{ patch.old, source_folder.? })) {
             std.log.err("Source folder doesn't match reference that the patch was generated from", .{});
             return error.SignatureMismatch;
         }
@@ -133,12 +133,12 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
 
     if (source_folder) |source_folde_unwrapped| {
         // Copy the folder to patch into our temporary staging folder.
-        try utils.copyFolder(tmp_folder.?, source_folde_unwrapped);
+        try @call(.never_inline, utils.copyFolder, .{ tmp_folder.?, source_folde_unwrapped });
     }
 
-    try ApplyPatch.createFileStructure(tmp_folder.?, patch);
+    try @call(.never_inline, ApplyPatch.createFileStructure, .{ tmp_folder.?, patch });
 
-    try ApplyPatch.applyPatch(cwd, source_folder, tmp_folder.?, patch_file_path, patch, thread_pool, allocator, config.progress_callback, apply_patch_stats);
+    try @call(.never_inline, ApplyPatch.applyPatch, .{ cwd, source_folder, tmp_folder.?, patch_file_path, patch, thread_pool, allocator, config.progress_callback, apply_patch_stats });
 
     if (source_folder) |*source_folder_unwrapped| {
         // If we already have a folder at the source path we back it up.
