@@ -77,7 +77,7 @@ pub const BrotliCompression = struct {
 
             var window_bits = brotli.BROTLI_DEFAULT_WINDOW;
             var mode = @intCast(c_uint, brotli.BROTLI_DEFAULT_MODE);
-            var quality: usize = 2;
+            var quality: usize = 5;
 
             _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_LGWIN, @intCast(u32, window_bits));
             _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_QUALITY, @intCast(u32, quality));
