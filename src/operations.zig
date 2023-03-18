@@ -7,12 +7,20 @@ const SignatureFile = @import("signature_file.zig").SignatureFile;
 const PatchGeneration = @import("patch_generation.zig");
 const utils = @import("utils.zig");
 
+pub const ProgressCallback = struct {
+    user_object: *anyopaque,
+    callback: *const fn (*anyopaque, f32, ?[]const u8) void,
+};
+
 pub const OperationStats = struct {
     pub const ApplyPatchStats = struct {};
 
     pub const CreatePatchStats = struct {
         changed_blocks: usize = 0,
         total_blocks: usize = 0,
+        total_signature_folder_size_bytes: usize = 0,
+        num_new_bytes: usize = 0,
+        total_patch_size_bytes: usize = 0,
     };
 
     pub const MakeSignatureStats = struct {
@@ -31,7 +39,7 @@ pub const OperationConfig = struct {
     thread_pool: *ThreadPool,
     allocator: std.mem.Allocator,
     working_dir: std.fs.Dir,
-    progress_callback: ?*const fn (f32, ?[]const u8) void = null,
+    progress_callback: ?ProgressCallback = null,
 };
 
 pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, config: OperationConfig) !void {
@@ -255,10 +263,14 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
         if (stats) |stats_unwrapped| {
             stats_unwrapped.create_patch_stats = .{};
             create_patch_stats = &stats_unwrapped.create_patch_stats.?;
+
+            for (new_signature_file.files.items) |signature_file_elem| {
+                create_patch_stats.?.total_signature_folder_size_bytes += signature_file_elem.size;
+            }
         }
 
         var create_patch_start_sample = timer.read();
-        try PatchGeneration.createPatch(thread_pool, new_signature_file, prev_signature_file.?, allocator, .{ .build_dir = open_dir, .staging_dir = staging_dir }, create_patch_stats);
+        try PatchGeneration.createPatch(thread_pool, new_signature_file, prev_signature_file.?, allocator, .{ .build_dir = open_dir, .staging_dir = staging_dir }, create_patch_stats, config.progress_callback);
         var create_patch_finish_sample = timer.read();
 
         if (stats) |*operation_stats| {

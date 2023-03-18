@@ -4,6 +4,7 @@ const BlockSize = @import("block.zig").BlockSize;
 const RollingHash = @import("rolling_hash.zig").RollingHash;
 const ThreadPool = @import("zap/thread_pool_go_based.zig");
 const WeakHashType = @import("block.zig").WeakHashType;
+const ProgressCallback = @import("operations.zig").ProgressCallback;
 
 pub const SignatureBlock = struct {
     file_idx: usize,
@@ -147,7 +148,7 @@ pub const SignatureFile = struct {
         }
     };
 
-    pub fn generateFromFolder(self: *SignatureFile, dir: std.fs.Dir, thread_pool: *ThreadPool, on_progress: ?*const fn (f32, ?[]const u8) void) !void {
+    pub fn generateFromFolder(self: *SignatureFile, dir: std.fs.Dir, thread_pool: *ThreadPool, on_progress: ?ProgressCallback) !void {
         self.deallocateBuffers();
 
         var root_dir = dir;
@@ -238,7 +239,7 @@ pub const SignatureFile = struct {
         while (num_batches_remaining > 0 and are_batches_done.load(.Acquire) == 0) {
             if (on_progress) |progress_callback_unwrapped| {
                 var elapsed_progress = (1.0 - @intToFloat(f32, num_batches_remaining) / @intToFloat(f32, num_batches_of_work)) * 100;
-                progress_callback_unwrapped(elapsed_progress, "Hashing Blocks");
+                progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Hashing Blocks");
             }
 
             std.time.sleep(std.time.ns_per_ms * 100);
