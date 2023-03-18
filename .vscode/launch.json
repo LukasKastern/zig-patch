@@ -53,7 +53,7 @@
       },
       "request": "launch",
       "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": ["apply", "--patch", "${workspaceFolder}/zig-out/bin/Patch.pwd", "--target_folder", "${workspaceFolder}/zig-out/bin/PatchedBuild"],
+      "args": ["apply", "--patch", "${workspaceFolder}/zig-out/bin/Patch.pwd", "--target_folder", "D:/Users/Administrator/Downloads/PatchedFolder/Build"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
