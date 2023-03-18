@@ -2,7 +2,6 @@ const SignatureFile = @import("signature_file.zig").SignatureFile;
 const SignatureBlock = @import("signature_file.zig").SignatureBlock;
 const Operation = @import("block_patching.zig").PatchOperation;
 const std = @import("std");
-const DeletedFile = union(enum) { Invalid: void, File: []const u8, Data: []u8 };
 const BlockHash = @import("block.zig").BlockHash;
 
 pub const FileSection = struct {

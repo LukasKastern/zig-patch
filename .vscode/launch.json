@@ -7,9 +7,9 @@
       "windows": {
         "type": "cppvsdbg"
       },
-      "request": "launch",
-      "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": ["create", "--source_folder", "E:/Personal/wharf-zig/wharf-zig/zig-out/bin/PatchedBuild"],
+      "request": "launch",  
+      "program": "${workspaceFolder}/zig-out/bin/zig-patch.exe",
+      "args": ["create", "--source_folder", "${input:selectFolder}", "--signature_file", "D:/Projects/Personal/zig-patch/zig-out/bin/Signature"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -30,19 +30,13 @@
         "type": "cppvsdbg"
       },
       "request": "launch",
-      "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": ["make_signature", "--source_folder", "E:/JourneeDevelopment/Windows", "--output_file", "E:/JourneeDevelopment/Signature"],
+      "program": "${workspaceFolder}/zig-out/bin/zig-patch.exe",
+      "args": ["make_signature", "--source_folder", "D:/Users/Administrator/Downloads/Build2/Build", "--output_file", "D:/Projects/Personal/zig-patch/zig-out/bin/Signature"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
       "externalConsole": false,
       "MIMode": "gdb",
-      "setupCommands": [
-        {
-          "text": "-enable-pretty-printing",
-          "ignoreFailures": true
-        }
-      ],
       "preLaunchTask": "build",
     },
     {
@@ -52,8 +46,8 @@
         "type": "cppvsdbg"
       },
       "request": "launch",
-      "program": "${workspaceFolder}/zig-out/bin/wharf-zig.exe",
-      "args": ["apply", "--patch", "${workspaceFolder}/zig-out/bin/Patch.pwd", "--target_folder", "C:/wharf-zig/zig-out/bin/PatchedBuild"],
+      "program": "${workspaceFolder}/zig-out/bin/zig-patch.exe",
+      "args": ["apply", "--patch", "${workspaceFolder}/zig-out/bin/Patch.pwd", "--target_folder", "D:/Users/Administrator/Downloads/PatchedFolder/Build"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -127,6 +121,14 @@
         "cwd": "${workspaceFolder}",
         "useSingleResult": true
       }
+    },
+    {
+      "id": "selectFolder",
+      "type": "promptString",
+      "description": "Enter a folder path",
     }
-  ]
+  ],
+  "options": {
+    "cwd": "${workspaceFolder}"
+  }
 }

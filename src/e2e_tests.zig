@@ -110,12 +110,12 @@ fn areDirectoriesEqual(lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *T
     var lhs_signature = try SignatureFile.init(allocator);
     defer lhs_signature.deinit();
 
-    try lhs_signature.generateFromFolder(lhs_dir, thread_pool);
+    try lhs_signature.generateFromFolder(lhs_dir, thread_pool, null);
 
     var rhs_signature = try SignatureFile.init(allocator);
     defer rhs_signature.deinit();
 
-    try rhs_signature.generateFromFolder(rhs_dir, thread_pool);
+    try rhs_signature.generateFromFolder(rhs_dir, thread_pool, null);
 
     const lhs_directories = lhs_signature.directories;
     const rhs_directories = rhs_signature.directories;
@@ -230,7 +230,7 @@ test "Full patch should match source folder" {
     };
 
     try operations.createPatch("Original", null, operation_config, null);
-    try operations.applyPatch("Patch.pwd", "Patched", operation_config);
+    try operations.applyPatch("Patch.pwd", "Patched", operation_config, null);
 
     {
         var src_folder = try cwd.openDir(src_folder_path, .{});
@@ -303,7 +303,7 @@ test "Patch should delete/create files and folders" {
         .allocator = std.testing.allocator,
     };
 
-    try operations.makeSignature("Original", "OriginalSignature", operation_config);
+    try operations.makeSignature("Original", "OriginalSignature", operation_config, null);
     {
         var modified_folder = try cwd.openDir(modified_folder_path, .{});
         defer modified_folder.close();
@@ -472,7 +472,7 @@ test "Patch should delete/create files and folders" {
     std.debug.print("Creating patch took {d:2}ms", .{(@intToFloat(f64, create_patch_sample) - @intToFloat(f64, pre_create_patch)) / 1000000});
 
     try operation_config.working_dir.rename("Patch.pwd", "PatchToModified.pwd");
-    try operations.applyPatch("PatchToModified.pwd", "Original", operation_config);
+    try operations.applyPatch("PatchToModified.pwd", "Original", operation_config, null);
 
     var end_sample = timer.read();
     std.debug.print("Did test in {d:2}ms", .{(@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000});
@@ -537,7 +537,7 @@ test "Modifying one block should result in one data operation being generated" {
         .allocator = std.testing.allocator,
     };
 
-    try operations.makeSignature("Original", "OriginalSignature", operation_config);
+    try operations.makeSignature("Original", "OriginalSignature", operation_config, null);
     var stats: operations.OperationStats = .{};
 
     // Modify one block of the "LargeFile".
@@ -611,7 +611,7 @@ test "Changing file size should result in one data operation being generated" {
         .allocator = std.testing.allocator,
     };
 
-    try operations.makeSignature("Original", "OriginalSignature", operation_config);
+    try operations.makeSignature("Original", "OriginalSignature", operation_config, null);
 
     {
         var modified_large_file = try src_folder.createFile("LargeFileModified", .{});

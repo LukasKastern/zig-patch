@@ -9,6 +9,8 @@ const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
 const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
 const BlockSize = @import("block.zig").BlockSize;
 const Compression = @import("compression/compression.zig").Compression;
+const ApplyPatchStats = @import("operations.zig").OperationStats.ApplyPatchStats;
+const ProgressCallback = @import("operations.zig").ProgressCallback;
 
 pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
     const old_signature = patch.old;
@@ -87,6 +89,8 @@ const ApplyPatchTask = struct {
     per_thread_operations_buffer: [][]u8,
     per_thread_read_buffers: [][]u8,
 
+    per_thread_applied_bytes: []usize,
+
     fn applyPatch(task: *ThreadPool.Task) void {
         var apply_patch_task_data = @fieldParentPtr(Self, "task", task);
         applyPatchImpl(apply_patch_task_data) catch |e| {
@@ -115,6 +119,8 @@ const ApplyPatchTask = struct {
         try target_file.setEndPos(self.file.size);
 
         var target_file_writer = target_file.writer();
+
+        var applied_bytes = &self.per_thread_applied_bytes[ThreadPool.Thread.current.?.idx];
 
         var patch_section_idx: usize = 0;
         while (patch_section_idx < num_patch_sections) : (patch_section_idx += 1) {
@@ -145,6 +151,7 @@ const ApplyPatchTask = struct {
             for (operations.items) |operation| {
                 if (operation == .Data) {
                     try target_file_writer.writeAll(operation.Data);
+                    applied_bytes.* += operation.Data.len;
                 } else if (operation == .BlockRange) {
                     var block_range = operation.BlockRange;
                     var block = self.anchored_blocks_map.getBlock(block_range.file_index, block_range.block_index);
@@ -172,7 +179,7 @@ const ApplyPatchTask = struct {
     }
 };
 
-pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: std.fs.Dir, patch_file_path: []const u8, patch: *PatchHeader, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
+pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: std.fs.Dir, patch_file_path: []const u8, patch: *PatchHeader, thread_pool: *ThreadPool, allocator: std.mem.Allocator, progress_callback: ?ProgressCallback, stats: ?*ApplyPatchStats) !void {
     var per_thread_operations_buffer = try allocator.alloc([]u8, thread_pool.max_threads);
     defer allocator.free(per_thread_operations_buffer);
 
@@ -212,6 +219,13 @@ pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: 
         }
     }
 
+    var per_thread_applied_bytes = try allocator.alloc(usize, thread_pool.max_threads);
+    defer allocator.free(per_thread_applied_bytes);
+
+    for (per_thread_applied_bytes) |*applied_bytes| {
+        applied_bytes.* = 0;
+    }
+
     var tasks = try allocator.alloc(ApplyPatchTask, patch.sections.items.len);
     defer allocator.free(tasks);
 
@@ -227,14 +241,45 @@ pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: 
     while (task_idx < patch.sections.items.len) : (task_idx += 1) {
         var section = patch.sections.items[task_idx];
 
-        tasks[task_idx] = .{ .per_thread_read_buffers = per_thread_read_buffer, .old_signature = patch.old, .anchored_blocks_map = anchored_blocks_map, .source_dir = source_dir, .per_thread_operations_buffer = per_thread_operations_buffer, .section = patch.sections.items[task_idx], .target_dir = target_dir, .are_sections_done = &are_sections_done, .sections_remaining = &sections_remaining, .per_thread_patch_files = per_thread_patch_files, .task = ThreadPool.Task{ .callback = ApplyPatchTask.applyPatch }, .file = patch.new.files.items[section.file_idx] };
+        // zig fmt: off
+        tasks[task_idx] = .{ 
+            .per_thread_applied_bytes = per_thread_applied_bytes, 
+            .per_thread_read_buffers = per_thread_read_buffer, 
+            .old_signature = patch.old, 
+            .anchored_blocks_map = anchored_blocks_map, 
+            .source_dir = source_dir, 
+            .per_thread_operations_buffer = per_thread_operations_buffer, 
+            .section = patch.sections.items[task_idx], 
+            .target_dir = target_dir, 
+            .are_sections_done = &are_sections_done, 
+            .sections_remaining = &sections_remaining, 
+            .per_thread_patch_files = per_thread_patch_files, 
+            .task = ThreadPool.Task{ .callback = ApplyPatchTask.applyPatch }, 
+            .file = patch.new.files.items[section.file_idx] 
+        };
+        // zig fmt: on
 
         batch.push(ThreadPool.Batch.from(&tasks[task_idx].task));
     }
 
     thread_pool.schedule(batch);
 
-    while (sections_remaining.load(.Acquire) != 0 and are_sections_done.load(.Acquire) == 0) {
-        std.Thread.Futex.wait(&are_sections_done, 0);
+    var num_sections_remaining = sections_remaining.load(.Acquire);
+    while (num_sections_remaining != 0 and are_sections_done.load(.Acquire) == 0) {
+        if (progress_callback) |progress_callback_unwrapped| {
+            var elapsed_progress = (1.0 - @intToFloat(f32, num_sections_remaining) / @intToFloat(f32, patch.sections.items.len)) * 100;
+            progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Merging Patch Sections");
+        }
+
+        std.time.sleep(std.time.ns_per_ms * 100);
+        num_sections_remaining = sections_remaining.load(.Acquire);
+    }
+
+    if (stats) |stats_unwrapped| {
+        stats_unwrapped.total_patch_size_bytes = 0;
+
+        for (per_thread_applied_bytes) |applied_bytes| {
+            stats_unwrapped.total_patch_size_bytes += applied_bytes;
+        }
     }
 }

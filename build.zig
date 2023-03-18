@@ -58,7 +58,7 @@ pub fn build(b: *std.build.Builder) void {
     var brotli_enc = brotli_dep.artifact("brotliencoder");
     var brotli_dec = brotli_dep.artifact("brotlidec");
 
-    const exe = b.addExecutable(.{ .name = "wharf-zig", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = mode });
+    const exe = b.addExecutable(.{ .name = "zig-patch", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = mode });
 
     exe.addIncludePath("third_party\\brotli-master\\c\\include");
     exe.addIncludePath("third_party\\zig-zlib\\zlib");

@@ -7,8 +7,8 @@ const MaxDataOperationLength = @import("block_patching.zig").MaxDataOperationLen
 const PatchHeader = @import("patch_header.zig").PatchHeader;
 const BlockSize = @import("block.zig").BlockSize;
 const Compression = @import("compression/compression.zig").Compression;
-
 const CreatePatchStats = @import("operations.zig").OperationStats.CreatePatchStats;
+const ProgressCallback = @import("operations.zig").ProgressCallback;
 
 const PatchFileInfo = struct {
     file_idx: usize,
@@ -100,7 +100,9 @@ fn ParallelList(comptime T: type) type {
     };
 }
 
-pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats) !void {
+threadlocal var compression_buffer: [DefaultMaxWorkUnitSize * 4]u8 = undefined;
+
+pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
     const PerPatchPartStagingFolderIO = struct {
         file_io: PatchFileIO,
         allocator: std.mem.Allocator,
@@ -109,7 +111,6 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         signature_file: *SignatureFile,
         max_work_unit_size: usize,
         fallback_allocator: std.mem.Allocator,
-        per_thread_compression_buffers: [][]u8,
         per_thread_deflate: []Compression.Deflating,
 
         fn write(patch_file_io: *PatchFileIO, patch_data: PatchFileData) error{WritePatchError}!void {
@@ -118,35 +119,32 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
             var file_name_buffer: [128]u8 = undefined;
             var name = std.fmt.bufPrint(&file_name_buffer, "File_{}_Part_{}", .{ patch_data.file_info.file_idx, patch_data.file_info.file_part_idx }) catch return error.WritePatchError;
 
-            var compression_buffer = self.per_thread_compression_buffers[ThreadPool.Thread.current.?.idx];
-            var compression_fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(compression_buffer);
+            var compression_fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(&compression_buffer);
 
             var compression_allocator = compression_fixed_buffer_allocator.allocator();
-            var data = compression_allocator.alloc(u8, self.max_work_unit_size * 2) catch return error.WritePatchError;
+            var data = compression_allocator.alloc(u8, self.max_work_unit_size * 2) catch unreachable;
 
             var fixed_buffer_stream = std.io.fixedBufferStream(data[0..]);
             var fixed_buffer_writer = fixed_buffer_stream.writer();
 
             // Serialize all operations into our fixed_memory_buffer.
             // We do not write them to the file directly since we first want to have the data go through our compression.
-            BlockPatching.saveOperations(patch_data.operations, fixed_buffer_writer) catch return error.WritePatchError;
-
-            // var deflating = self.per_thread_deflate[ThreadPool.Thread.current.?.idx];
+            BlockPatching.saveOperations(patch_data.operations, fixed_buffer_writer) catch unreachable;
 
             var deflating_stack_allocator = std.heap.stackFallback(DefaultMaxWorkUnitSize * 3, self.fallback_allocator);
             var deflating_allocator = deflating_stack_allocator.get();
 
-            var deflating = Compression.Deflating.init(Compression.Default, deflating_allocator) catch return error.WritePatchError;
+            var deflating = Compression.Deflating.init(Compression.Default, deflating_allocator) catch unreachable;
             defer deflating.deinit();
 
-            var deflated_bufer = compression_allocator.alloc(u8, self.max_work_unit_size + 1024) catch return error.WritePatchError;
+            var deflated_bufer = compression_allocator.alloc(u8, self.max_work_unit_size + 1024) catch unreachable;
 
-            var deflated_data = deflating.deflateBuffer(fixed_buffer_stream.buffer[0..fixed_buffer_stream.pos], deflated_bufer) catch return error.WritePatchError;
+            var deflated_data = deflating.deflateBuffer(fixed_buffer_stream.buffer[0..fixed_buffer_stream.pos], deflated_bufer) catch unreachable;
 
-            var fs_file = self.staging_dir.createFile(name, .{}) catch return error.WritePatchError;
+            var fs_file = self.staging_dir.createFile(name, .{}) catch unreachable;
             defer fs_file.close();
 
-            fs_file.writeAll(deflated_data) catch return error.WritePatchError;
+            fs_file.writeAll(deflated_data) catch unreachable;
         }
 
         fn read(patch_file_io: *PatchFileIO, file_info: PatchFileInfo, read_buffer: []u8) error{ReadPatchError}!usize {
@@ -163,19 +161,6 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
     };
 
     var staging_folder = options.staging_dir;
-
-    var per_thread_compression_buffers = try allocator.alloc([]u8, thread_pool.max_threads);
-    defer allocator.free(per_thread_compression_buffers);
-
-    for (per_thread_compression_buffers) |*operations_buffer| {
-        operations_buffer.* = try allocator.alloc(u8, options.max_work_unit_size * 4);
-    }
-
-    defer {
-        for (per_thread_compression_buffers) |operations_buffer| {
-            allocator.free(operations_buffer);
-        }
-    }
 
     var per_thread_deflate = try allocator.alloc(Compression.Deflating, thread_pool.max_threads);
     defer allocator.free(per_thread_deflate);
@@ -201,17 +186,16 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
         .build_dir = options.build_dir,
         .staging_dir = staging_folder,
         .max_work_unit_size = options.max_work_unit_size,
-        .per_thread_compression_buffers = per_thread_compression_buffers,
         .fallback_allocator = allocator,
         .per_thread_deflate = per_thread_deflate,
     };
     // zig fmt: on
 
     // To allow better parallization we split files up into batches of MaxWorkUnitSize.
-    try createPerFilePatchOperations(thread_pool, new_signature, old_signature, allocator, .{ .patch_file_io = &staging_folder_io.file_io, .create_patch_options = options }, stats);
+    try createPerFilePatchOperations(thread_pool, new_signature, old_signature, allocator, .{ .patch_file_io = &staging_folder_io.file_io, .create_patch_options = options }, stats, progress_callback);
 
     // Once all the required operations have been generated we assemble the individual operations into one patch file.
-    try assemblePatchFromFiles(new_signature, old_signature, staging_folder, allocator, options);
+    try assemblePatchFromFiles(new_signature, old_signature, staging_folder, allocator, options, stats, progress_callback);
 }
 
 fn numPatchFilesNeeded(signature: *SignatureFile, work_unit_size: usize) usize {
@@ -236,7 +220,7 @@ fn numRealFilesInPatch(signature: *SignatureFile) usize {
     return num_patch_files;
 }
 
-pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *SignatureFile, staging_dir: std.fs.Dir, allocator: std.mem.Allocator, options: CreatePatchOptions) !void {
+pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *SignatureFile, staging_dir: std.fs.Dir, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
     var patch = try staging_dir.createFile("Patch.pwd", .{});
     defer patch.close();
 
@@ -260,6 +244,10 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
 
     var buffered_writer = buffered_file_writer.writer();
 
+    if (progress_callback) |progress_callback_unwrapped| {
+        progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, 0.0, "Assembling Patch");
+    }
+
     // Write the header once without the actual file data.
     // The file data will be populated in the loop below.
     // Once all the data is written we go back to the start of the file and write the proper data.
@@ -275,6 +263,11 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
 
     while (file_idx_in_patch < num_files) : (file_idx_in_patch += 1) {
         var file = new_signature.files.items[file_idx];
+
+        if (progress_callback) |progress_callback_unwrapped| {
+            var progress = @intToFloat(f32, file_idx_in_patch) / @intToFloat(f32, num_files);
+            progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, progress * 100.0, "Assembling Patch");
+        }
 
         while (file.size == 0) {
             file_idx += 1;
@@ -326,9 +319,13 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
     if (try patch.getPos() != reserved_header_bytes) {
         return error.ReservedHeaderSizeMismatchesWrittenLen;
     }
+
+    if (stats) |stats_unwrapped| {
+        stats_unwrapped.total_patch_size_bytes = offset_in_file;
+    }
 }
 
-pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOperationsOptions, patch_stats: ?*CreatePatchStats) !void {
+pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOperationsOptions, patch_stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
     var num_patch_files: usize = numPatchFilesNeeded(new_signature, options.create_patch_options.max_work_unit_size);
 
     var anchored_block_map = try AnchoredBlocksMap.init(old_signature.*, allocator);
@@ -353,16 +350,18 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
         pub const PerThreadStats = struct {
             changed_blocks: usize,
             total_blocks: usize,
+            new_bytes: usize,
         };
 
         fn generatePatch(task: *ThreadPool.Task) void {
             var generate_patch_task_data = @fieldParentPtr(Self, "task", task);
-            generatePatchImpl(generate_patch_task_data) catch unreachable;
+            generatePatchImpl(generate_patch_task_data) catch |e| {
+                std.log.err("Error occured while trying to generate path error={s}\n", .{@errorName(e)});
+                unreachable;
+            };
         }
 
         fn generatePatchImpl(self: *Self) !void {
-            @setRuntimeSafety(false);
-
             var buffer = self.per_thread_buffers[ThreadPool.Thread.current.?.idx];
             var read_len = try self.io.read_patch_file(self.io, self.file_info, buffer);
 
@@ -380,6 +379,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
                 var thread_stats_data = &per_thread_stats_unwrapped[ThreadPool.Thread.current.?.idx];
                 var changed_blocks = &thread_stats_data.changed_blocks;
                 var total_blocks = &thread_stats_data.total_blocks;
+                var new_bytes = &thread_stats_data.new_bytes;
 
                 for (generated_operations.items) |operation| {
                     switch (operation) {
@@ -388,6 +388,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
                             // std.log.info("Data found in {} and part {}, blocks: {}", .{ self.file_info.file_idx, self.file_info.file_part_idx, blocks_in_data_op });
                             changed_blocks.* += @floatToInt(usize, blocks_in_data_op);
                             total_blocks.* += @floatToInt(usize, blocks_in_data_op);
+                            new_bytes.* += data.len;
                         },
                         .BlockRange => {
                             total_blocks.* += operation.BlockRange.block_span;
@@ -439,6 +440,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
             stat.* = .{
                 .changed_blocks = 0,
                 .total_blocks = 0,
+                .new_bytes = 0,
             };
         }
     }
@@ -487,8 +489,15 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
 
     thread_pool.schedule(batch);
 
-    while (patches_remaining.load(.Acquire) != 0 and are_patches_done.load(.Acquire) == 0) {
-        std.Thread.Futex.wait(&are_patches_done, 0);
+    var current_num_patches_remaining = patches_remaining.load(.Acquire);
+    while (current_num_patches_remaining != 0 and are_patches_done.load(.Acquire) == 0) {
+        if (progress_callback) |progress_callback_unwrapped| {
+            var elapsed_progress = (1.0 - @intToFloat(f32, current_num_patches_remaining) / @intToFloat(f32, num_patch_files)) * 100;
+            progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Generating Patches");
+        }
+
+        std.time.sleep(std.time.ns_per_ms * 100);
+        current_num_patches_remaining = patches_remaining.load(.Acquire);
     }
 
     if (per_thread_stats) |per_thread_stats_unwrapped| {
@@ -496,6 +505,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
         for (per_thread_stats_unwrapped) |thread_stats| {
             stats.changed_blocks += thread_stats.changed_blocks;
             stats.total_blocks += thread_stats.total_blocks;
+            stats.num_new_bytes += thread_stats.new_bytes;
         }
     }
 }
@@ -606,7 +616,7 @@ test "two files with no previous signature should result in two data operation p
 
     var create_patch_options: CreatePatchOptions = .{ .staging_dir = undefined, .build_dir = undefined };
 
-    try createPerFilePatchOperations(&thread_pool, new_signature, old_signature, std.testing.allocator, .{ .patch_file_io = &io_mock.file_io, .create_patch_options = create_patch_options }, null);
+    try createPerFilePatchOperations(&thread_pool, new_signature, old_signature, std.testing.allocator, .{ .patch_file_io = &io_mock.file_io, .create_patch_options = create_patch_options }, null, null);
 
     var patches = try io_mock.patches.flattenParallelList(std.testing.allocator);
     defer std.testing.allocator.free(patches);
