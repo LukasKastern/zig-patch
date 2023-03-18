@@ -13,8 +13,11 @@ const PatchHeader = @import("patch_header.zig").PatchHeader;
 const ApplyPatch = @import("apply_patch.zig");
 const operations = @import("operations.zig");
 const OperationStats = operations.OperationStats;
+const builtin = @import("builtin");
 
 const clap = @import("clap");
+
+const bytes_to_MiB = 1_048_576;
 
 const ShutdownTaskData = struct {
     task: ThreadPool.Task,
@@ -89,13 +92,69 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         return;
     }
 
+    const CreatePatchPrintHelper = struct {
+        const Self = @This();
+
+        const CreatePatchState = enum {
+            None,
+            HashingSource,
+            GeneratingPatch,
+            AssemblingPatch,
+        };
+
+        state: CreatePatchState = .None,
+        source_folder: []const u8,
+
+        fn onMakeSignatureProgress(print_helper_opaque: *anyopaque, progress: f32, progress_str: ?[]const u8) void {
+            const stdout = std.io.getStdErr().writer();
+
+            var print_helper = @ptrCast(*Self, @alignCast(@alignOf(*Self), print_helper_opaque));
+
+            const progress_str_to_state = [_][]const u8{ "", "Hashing Blocks", "Generating Patches", "Assembling Patch" };
+
+            if (progress_str) |progress_str_value| {
+                var new_state: CreatePatchState = .None;
+
+                inline for (progress_str_to_state, 0..) |state_progress_str, idx| {
+                    if (std.mem.eql(u8, state_progress_str, progress_str_value)) {
+                        new_state = @intToEnum(CreatePatchState, idx);
+                    }
+                }
+
+                if (print_helper.state != new_state) {
+                    print_helper.state = new_state;
+
+                    switch (new_state) {
+                        .None => {},
+                        .HashingSource => {
+                            stdout.print("\r∙ Hashing                   \n", .{}) catch {};
+                        },
+                        .GeneratingPatch => {
+                            stdout.print("\r∙ Calculating Patch         \n", .{}) catch {};
+                        },
+                        .AssemblingPatch => {
+                            stdout.print("\r∙ Assembling Patch          \n", .{}) catch {};
+                        },
+                    }
+                }
+            }
+
+            stdout.print("\r{d:.2}%             ", .{progress}) catch {};
+        }
+    };
+
+    var print_helper = CreatePatchPrintHelper{ .source_folder = parsed_args.args.source_folder.? };
+
     var stats: OperationStats = .{};
 
+    // zig fmt: off
     try operations.createPatch(folder.?, previous_signature, .{
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,
+        .progress_callback = .{.user_object = &print_helper, .callback = CreatePatchPrintHelper.onMakeSignatureProgress}
     }, &stats);
+    // zig fmt: on
 
     var create_patch_stats = stats.create_patch_stats.?;
 
@@ -103,7 +162,22 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
 
     var changed_blocks_percentage = @intToFloat(f64, create_patch_stats.changed_blocks) / @intToFloat(f64, total_blocks) * 100;
 
-    std.log.info("Created Patch in {d:2}ms - {d:.3}% ({}/{}) of blocks changed", .{ stats.total_operation_time, changed_blocks_percentage, create_patch_stats.changed_blocks, create_patch_stats.total_blocks });
+    _ = changed_blocks_percentage;
+    {
+        const stdout = std.io.getStdErr().writer();
+
+        const new_bytes_percentage = @intToFloat(f32, create_patch_stats.num_new_bytes) / @intToFloat(f32, create_patch_stats.total_signature_folder_size_bytes);
+        const reused_percentage = 1.0 - new_bytes_percentage;
+
+        var new_data_size_MiB = @intToFloat(f32, create_patch_stats.num_new_bytes) / bytes_to_MiB;
+
+        var total_patch_size_MiB = @intToFloat(f32, create_patch_stats.total_patch_size_bytes) / bytes_to_MiB;
+        var percentage_of_full_size = @intToFloat(f32, create_patch_stats.total_patch_size_bytes) / @intToFloat(f32, create_patch_stats.total_signature_folder_size_bytes);
+
+        stdout.print("\r√ Re-used {d:.2}% of old, added {d:.2} MiB fresh data\n", .{ reused_percentage * 100, new_data_size_MiB }) catch {};
+
+        stdout.print("√ {d:.2} MiB patch ({d:.2}% of the full size) in {d:.2}s\n", .{ total_patch_size_MiB, percentage_of_full_size * 100, stats.total_operation_time / std.time.ms_per_s }) catch {};
+    }
 }
 
 fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
@@ -134,7 +208,7 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
     }
 
     if (parsed_args.args.patch == null) {
-        std.log.err("Please pass a patch file generated thorugh create via the --patch <str> param", .{});
+        std.log.err("Please pass a patch file generated through create via the --patch <str> param", .{});
         std.os.exit(0);
         return;
     }
@@ -144,11 +218,43 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
         return;
     }
 
+    {
+        const stdout = std.io.getStdErr().writer();
+        try stdout.print("∙ Applying Patch\n", .{});
+    }
+
+    const MakeSignaturePrintHelper = struct {
+        const Self = @This();
+
+        fn onMakeSignatureProgress(user_object: *anyopaque, progress: f32, progress_str: ?[]const u8) void {
+            const stdout = std.io.getStdErr().writer();
+            stdout.print("\r{d:.2}%             ", .{progress}) catch {};
+
+            _ = progress_str;
+            _ = user_object;
+        }
+    };
+
+    var stats: OperationStats = .{};
+
+    var print_helper = MakeSignaturePrintHelper{};
+
+    // zig fmt: off
     try operations.applyPatch(parsed_args.args.patch.?, parsed_args.args.target_folder.?, .{
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,
-    });
+        .progress_callback = .{ .user_object = &print_helper, .callback = MakeSignaturePrintHelper.onMakeSignatureProgress }
+    }, &stats);
+    // zig fmt: on
+
+    {
+        var apply_patch_stats = stats.apply_patch_stats.?;
+        const stdout = std.io.getStdErr().writer();
+
+        var total_patch_size_MiB = apply_patch_stats.total_patch_size_bytes / bytes_to_MiB;
+        try stdout.print("\r√ Applied {d:.2} MiB ({} files, {} dirs) in {d:.2}s\n", .{ total_patch_size_MiB, apply_patch_stats.num_files, apply_patch_stats.num_directories, stats.total_operation_time / std.time.ms_per_s });
+    }
 }
 
 fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
@@ -191,19 +297,50 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
         return;
     }
 
-    try operations.makeSignature(parsed_args.args.source_folder.?, parsed_args.args.output_file.?, .{
-        .working_dir = std.fs.cwd(),
-        .thread_pool = thread_pool,
-        .allocator = allocator,
-    });
+    {
+        const stdout = std.io.getStdErr().writer();
+        try stdout.print("∙ Hashing {s}\n", .{parsed_args.args.source_folder.?});
+    }
+
+    const MakeSignaturePrintHelper = struct {
+        const Self = @This();
+
+        fn onMakeSignatureProgress(user_object: *anyopaque, progress: f32, progress_str: ?[]const u8) void {
+            const stdout = std.io.getStdErr().writer();
+            stdout.print("\r{d:.2}%             ", .{progress}) catch {};
+
+            _ = progress_str;
+            _ = user_object;
+        }
+    };
+
+    var print_helper = MakeSignaturePrintHelper{};
+    var operation_stats: OperationStats = .{};
+
+    try operations.makeSignature(parsed_args.args.source_folder.?, parsed_args.args.output_file.?, .{ .working_dir = std.fs.cwd(), .thread_pool = thread_pool, .allocator = allocator, .progress_callback = .{ .user_object = &print_helper, .callback = MakeSignaturePrintHelper.onMakeSignatureProgress } }, &operation_stats);
+
+    {
+        const stdout = std.io.getStdErr().writer();
+
+        var make_signature_stats = operation_stats.make_signature_stats.?;
+
+        var folder_size_GiB = @intToFloat(f32, make_signature_stats.total_signature_folder_size_bytes) / 1_073_741_824.0;
+
+        stdout.print("\r√ {d:.2}GiB ({} files, {} directories) @ {d:.2}s            \n", .{ folder_size_GiB, make_signature_stats.num_files, make_signature_stats.num_directories, operation_stats.total_operation_time / std.time.ms_per_s }) catch {};
+    }
 }
 
 pub const std_options = struct {
-    // Set the log level to info
-    pub const log_level = .info;
+    // Set the log level to error
+    pub const log_level = .err;
 };
 
 pub fn main() !void {
+    // Enable utf-8 console output
+    if (builtin.os.tag == .windows) {
+        _ = std.os.windows.kernel32.SetConsoleOutputCP(65001);
+    }
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 

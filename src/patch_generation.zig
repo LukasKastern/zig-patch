@@ -7,8 +7,8 @@ const MaxDataOperationLength = @import("block_patching.zig").MaxDataOperationLen
 const PatchHeader = @import("patch_header.zig").PatchHeader;
 const BlockSize = @import("block.zig").BlockSize;
 const Compression = @import("compression/compression.zig").Compression;
-
 const CreatePatchStats = @import("operations.zig").OperationStats.CreatePatchStats;
+const ProgressCallback = @import("operations.zig").ProgressCallback;
 
 const PatchFileInfo = struct {
     file_idx: usize,
@@ -100,7 +100,7 @@ fn ParallelList(comptime T: type) type {
     };
 }
 
-pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats) !void {
+pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
     const PerPatchPartStagingFolderIO = struct {
         file_io: PatchFileIO,
         allocator: std.mem.Allocator,
@@ -208,10 +208,10 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
     // zig fmt: on
 
     // To allow better parallization we split files up into batches of MaxWorkUnitSize.
-    try createPerFilePatchOperations(thread_pool, new_signature, old_signature, allocator, .{ .patch_file_io = &staging_folder_io.file_io, .create_patch_options = options }, stats);
+    try createPerFilePatchOperations(thread_pool, new_signature, old_signature, allocator, .{ .patch_file_io = &staging_folder_io.file_io, .create_patch_options = options }, stats, progress_callback);
 
     // Once all the required operations have been generated we assemble the individual operations into one patch file.
-    try assemblePatchFromFiles(new_signature, old_signature, staging_folder, allocator, options);
+    try assemblePatchFromFiles(new_signature, old_signature, staging_folder, allocator, options, stats, progress_callback);
 }
 
 fn numPatchFilesNeeded(signature: *SignatureFile, work_unit_size: usize) usize {
@@ -236,7 +236,7 @@ fn numRealFilesInPatch(signature: *SignatureFile) usize {
     return num_patch_files;
 }
 
-pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *SignatureFile, staging_dir: std.fs.Dir, allocator: std.mem.Allocator, options: CreatePatchOptions) !void {
+pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *SignatureFile, staging_dir: std.fs.Dir, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
     var patch = try staging_dir.createFile("Patch.pwd", .{});
     defer patch.close();
 
@@ -260,6 +260,10 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
 
     var buffered_writer = buffered_file_writer.writer();
 
+    if (progress_callback) |progress_callback_unwrapped| {
+        progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, 0.0, "Assembling Patch");
+    }
+
     // Write the header once without the actual file data.
     // The file data will be populated in the loop below.
     // Once all the data is written we go back to the start of the file and write the proper data.
@@ -275,6 +279,11 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
 
     while (file_idx_in_patch < num_files) : (file_idx_in_patch += 1) {
         var file = new_signature.files.items[file_idx];
+
+        if (progress_callback) |progress_callback_unwrapped| {
+            var progress = @intToFloat(f32, file_idx_in_patch) / @intToFloat(f32, num_files);
+            progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, progress * 100.0, "Assembling Patch");
+        }
 
         while (file.size == 0) {
             file_idx += 1;
@@ -326,9 +335,13 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
     if (try patch.getPos() != reserved_header_bytes) {
         return error.ReservedHeaderSizeMismatchesWrittenLen;
     }
+
+    if (stats) |stats_unwrapped| {
+        stats_unwrapped.total_patch_size_bytes = offset_in_file;
+    }
 }
 
-pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOperationsOptions, patch_stats: ?*CreatePatchStats) !void {
+pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOperationsOptions, patch_stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
     var num_patch_files: usize = numPatchFilesNeeded(new_signature, options.create_patch_options.max_work_unit_size);
 
     var anchored_block_map = try AnchoredBlocksMap.init(old_signature.*, allocator);
@@ -353,6 +366,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
         pub const PerThreadStats = struct {
             changed_blocks: usize,
             total_blocks: usize,
+            new_bytes: usize,
         };
 
         fn generatePatch(task: *ThreadPool.Task) void {
@@ -380,6 +394,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
                 var thread_stats_data = &per_thread_stats_unwrapped[ThreadPool.Thread.current.?.idx];
                 var changed_blocks = &thread_stats_data.changed_blocks;
                 var total_blocks = &thread_stats_data.total_blocks;
+                var new_bytes = &thread_stats_data.new_bytes;
 
                 for (generated_operations.items) |operation| {
                     switch (operation) {
@@ -388,6 +403,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
                             // std.log.info("Data found in {} and part {}, blocks: {}", .{ self.file_info.file_idx, self.file_info.file_part_idx, blocks_in_data_op });
                             changed_blocks.* += @floatToInt(usize, blocks_in_data_op);
                             total_blocks.* += @floatToInt(usize, blocks_in_data_op);
+                            new_bytes.* += data.len;
                         },
                         .BlockRange => {
                             total_blocks.* += operation.BlockRange.block_span;
@@ -439,6 +455,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
             stat.* = .{
                 .changed_blocks = 0,
                 .total_blocks = 0,
+                .new_bytes = 0,
             };
         }
     }
@@ -487,8 +504,15 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
 
     thread_pool.schedule(batch);
 
-    while (patches_remaining.load(.Acquire) != 0 and are_patches_done.load(.Acquire) == 0) {
-        std.Thread.Futex.wait(&are_patches_done, 0);
+    var current_num_patches_remaining = patches_remaining.load(.Acquire);
+    while (current_num_patches_remaining != 0 and are_patches_done.load(.Acquire) == 0) {
+        if (progress_callback) |progress_callback_unwrapped| {
+            var elapsed_progress = (1.0 - @intToFloat(f32, current_num_patches_remaining) / @intToFloat(f32, num_patch_files)) * 100;
+            progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Generating Patches");
+        }
+
+        std.time.sleep(std.time.ns_per_ms * 100);
+        current_num_patches_remaining = patches_remaining.load(.Acquire);
     }
 
     if (per_thread_stats) |per_thread_stats_unwrapped| {
@@ -496,6 +520,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
         for (per_thread_stats_unwrapped) |thread_stats| {
             stats.changed_blocks += thread_stats.changed_blocks;
             stats.total_blocks += thread_stats.total_blocks;
+            stats.num_new_bytes += thread_stats.new_bytes;
         }
     }
 }
