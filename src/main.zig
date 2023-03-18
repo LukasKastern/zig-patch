@@ -332,7 +332,7 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
 
 pub const std_options = struct {
     // Set the log level to error
-    pub const log_level = .debug;
+    pub const log_level = .warn;
 };
 
 pub fn main() !void {
