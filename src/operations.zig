@@ -13,7 +13,11 @@ pub const ProgressCallback = struct {
 };
 
 pub const OperationStats = struct {
-    pub const ApplyPatchStats = struct {};
+    pub const ApplyPatchStats = struct {
+        num_files: usize = 0,
+        num_directories: usize = 0,
+        total_patch_size_bytes: usize = 0,
+    };
 
     pub const CreatePatchStats = struct {
         changed_blocks: usize = 0,
@@ -42,7 +46,7 @@ pub const OperationConfig = struct {
     progress_callback: ?ProgressCallback = null,
 };
 
-pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, config: OperationConfig) !void {
+pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, config: OperationConfig, stats: ?*OperationStats) !void {
     var allocator = config.allocator;
     var thread_pool = config.thread_pool;
     var cwd: std.fs.Dir = config.working_dir;
@@ -75,6 +79,13 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
     defer patch.deinit();
     defer patch.new.deinit();
     defer patch.old.deinit();
+
+    var apply_patch_stats: ?*OperationStats.ApplyPatchStats = null;
+
+    if (stats) |stats_unwrapped| {
+        stats_unwrapped.apply_patch_stats = .{ .num_files = patch.new.files.items.len, .num_directories = patch.new.directories.items.len };
+        apply_patch_stats = &stats_unwrapped.apply_patch_stats.?;
+    }
 
     var validate_source_folder = patch.old.blocks.items.len > 0 or patch.old.directories.items.len > 0 or patch.old.files.items.len > 0;
 
@@ -116,7 +127,7 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
     if (validate_source_folder) {
         if (source_folder == null or !patch.old.validateFolderMatchesSignature(source_folder.?)) {
             std.log.err("Source folder doesn't match reference that the patch was generated from", .{});
-            return;
+            return error.SignatureMismatch;
         }
     }
 
@@ -127,7 +138,7 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
 
     try ApplyPatch.createFileStructure(tmp_folder.?, patch);
 
-    try ApplyPatch.applyPatch(cwd, source_folder, tmp_folder.?, patch_file_path, patch, thread_pool, allocator);
+    try ApplyPatch.applyPatch(cwd, source_folder, tmp_folder.?, patch_file_path, patch, thread_pool, allocator, config.progress_callback, apply_patch_stats);
 
     if (source_folder) |*source_folder_unwrapped| {
         // If we already have a folder at the source path we back it up.
@@ -143,6 +154,10 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
 
     var end_sample = timer.read();
     std.log.info("Applied Patch in {d:2}ms", .{(@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000});
+
+    if (stats) |*operation_stats| {
+        operation_stats.*.total_operation_time = (@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000;
+    }
 }
 
 fn findPatchStagingDir(cwd: std.fs.Dir) !std.fs.Dir {

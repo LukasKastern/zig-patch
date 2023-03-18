@@ -17,6 +17,8 @@ const builtin = @import("builtin");
 
 const clap = @import("clap");
 
+const bytes_to_MiB = 1_048_576;
+
 const ShutdownTaskData = struct {
     task: ThreadPool.Task,
     pool: *ThreadPool,
@@ -167,7 +169,6 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         const new_bytes_percentage = @intToFloat(f32, create_patch_stats.num_new_bytes) / @intToFloat(f32, create_patch_stats.total_signature_folder_size_bytes);
         const reused_percentage = 1.0 - new_bytes_percentage;
 
-        const bytes_to_MiB = 1_048_576;
         var new_data_size_MiB = @intToFloat(f32, create_patch_stats.num_new_bytes) / bytes_to_MiB;
 
         var total_patch_size_MiB = @intToFloat(f32, create_patch_stats.total_patch_size_bytes) / bytes_to_MiB;
@@ -207,7 +208,7 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
     }
 
     if (parsed_args.args.patch == null) {
-        std.log.err("Please pass a patch file generated thorugh create via the --patch <str> param", .{});
+        std.log.err("Please pass a patch file generated through create via the --patch <str> param", .{});
         std.os.exit(0);
         return;
     }
@@ -217,11 +218,43 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
         return;
     }
 
+    {
+        const stdout = std.io.getStdErr().writer();
+        try stdout.print("∙ Applying Patch\n", .{});
+    }
+
+    const MakeSignaturePrintHelper = struct {
+        const Self = @This();
+
+        fn onMakeSignatureProgress(user_object: *anyopaque, progress: f32, progress_str: ?[]const u8) void {
+            const stdout = std.io.getStdErr().writer();
+            stdout.print("\r{d:.2}%             ", .{progress}) catch {};
+
+            _ = progress_str;
+            _ = user_object;
+        }
+    };
+
+    var stats: OperationStats = .{};
+
+    var print_helper = MakeSignaturePrintHelper{};
+
+    // zig fmt: off
     try operations.applyPatch(parsed_args.args.patch.?, parsed_args.args.target_folder.?, .{
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,
-    });
+        .progress_callback = .{ .user_object = &print_helper, .callback = MakeSignaturePrintHelper.onMakeSignatureProgress }
+    }, &stats);
+    // zig fmt: on
+
+    {
+        var apply_patch_stats = stats.apply_patch_stats.?;
+        const stdout = std.io.getStdErr().writer();
+
+        var total_patch_size_MiB = apply_patch_stats.total_patch_size_bytes / bytes_to_MiB;
+        try stdout.print("\r√ Applied {d:.2} MiB ({} files, {} dirs) in {d:.2}s\n", .{ total_patch_size_MiB, apply_patch_stats.num_files, apply_patch_stats.num_directories, stats.total_operation_time / std.time.ms_per_s });
+    }
 }
 
 fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
