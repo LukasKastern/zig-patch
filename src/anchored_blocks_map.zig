@@ -13,7 +13,12 @@ pub const AnchoredBlock = struct {
 };
 
 pub const AnchoredBlocksMap = struct {
-    const HashMapType = std.AutoHashMap(WeakHashType, *std.ArrayList(AnchoredBlock));
+    const HashMapEntry = union(enum) {
+        BoundedBlocks: std.BoundedArray(usize, 4),
+        FallbackBlocks: std.ArrayList(usize),
+    };
+
+    const HashMapType = std.AutoHashMap(WeakHashType, HashMapEntry);
 
     allocator: std.mem.Allocator,
     underlying_hash_map: HashMapType,
@@ -28,8 +33,6 @@ pub const AnchoredBlocksMap = struct {
         var self = try allocator.create(AnchoredBlocksMap);
         self.allocator = allocator;
         self.underlying_hash_map = HashMapType.init(allocator);
-        try self.underlying_hash_map.ensureTotalCapacity(@truncate(u32, signature_file.blocks.items.len));
-        try self.anchorBlockHashes(signature_file);
 
         self.all_blocks = try std.ArrayList(AnchoredBlock).initCapacity(allocator, signature_file.blocks.items.len);
         self.block_start_by_file = try std.ArrayList(usize).initCapacity(allocator, signature_file.files.items.len);
@@ -53,6 +56,9 @@ pub const AnchoredBlocksMap = struct {
             self.all_blocks.items[start_idx + block.block_idx] = anchoredBlockFromSignatureBlock(signature_file, block);
         }
 
+        try self.underlying_hash_map.ensureTotalCapacity(@truncate(u32, signature_file.blocks.items.len));
+        try self.anchorBlockHashes();
+
         return self;
     }
 
@@ -61,8 +67,12 @@ pub const AnchoredBlocksMap = struct {
 
         while (keys.next()) |key| {
             if (self.underlying_hash_map.get(key.*)) |value| {
-                value.deinit();
-                self.allocator.destroy(value);
+                switch (value) {
+                    .FallbackBlocks => |fallback| {
+                        fallback.deinit();
+                    },
+                    .BoundedBlocks => {},
+                }
             }
         }
 
@@ -82,7 +92,13 @@ pub const AnchoredBlocksMap = struct {
         var best_block: ?AnchoredBlock = null;
 
         if (self.underlying_hash_map.get(hash.weak_hash)) |blocks| {
-            for (blocks.items) |block| {
+            var block_slice: []const usize = switch (blocks) {
+                .BoundedBlocks => |bounded_blocks| bounded_blocks.slice(),
+                .FallbackBlocks => |fallback_blocks| fallback_blocks.items,
+            };
+
+            for (block_slice) |block_idx| {
+                var block = self.all_blocks.items[block_idx];
 
                 // Only match blocks with the same length.
                 if (block.short_size != short_size) {
@@ -104,20 +120,6 @@ pub const AnchoredBlocksMap = struct {
         return self.underlying_hash_map.contains(weak_hash);
     }
 
-    fn addAnchoredBlock(self: *Self, anchored_block: AnchoredBlock) !void {
-        var blocks: *std.ArrayList(AnchoredBlock) = undefined;
-
-        if (self.underlying_hash_map.get(anchored_block.hash.weak_hash)) |already_existing_blocks| {
-            blocks = already_existing_blocks;
-        } else {
-            blocks = try self.allocator.create(std.ArrayList(AnchoredBlock));
-            blocks.* = std.ArrayList(AnchoredBlock).init(self.allocator);
-            self.underlying_hash_map.putAssumeCapacity(anchored_block.hash.weak_hash, blocks);
-        }
-
-        try blocks.append(anchored_block);
-    }
-
     fn anchoredBlockFromSignatureBlock(signature_file: SignatureFile, signature_block: SignatureBlock) AnchoredBlock {
         var file = signature_file.files.items[signature_block.file_idx];
         var left_over_bytes = std.math.min(BlockSize, file.size - BlockSize * signature_block.block_idx);
@@ -130,28 +132,30 @@ pub const AnchoredBlocksMap = struct {
         };
     }
 
-    fn anchorBlockHashes(anchored_hashes: *AnchoredBlocksMap, signature_file: SignatureFile) !void {
-        var byte_offset: isize = 0;
+    fn anchorBlockHashes(self: *AnchoredBlocksMap) !void {
 
-        for (signature_file.blocks.items) |block| {
-            var file_index = block.file_idx;
-            var block_index = block.block_idx;
+        // We append the blocks to the hashmap trying to fit them into the preallocated "BoundedBlocks"
+        // If that's not possible because we have too many overlapping weak hashes we heap allocate a buffer to store them.
+        for (self.all_blocks.items, 0..) |block, idx| {
+            var blocks = self.underlying_hash_map.getOrPutAssumeCapacity(block.hash.weak_hash);
 
-            var file = signature_file.files.items[block.file_idx];
-            var left_over_bytes = std.math.min(BlockSize, file.size - BlockSize * block.block_idx);
+            if (!blocks.found_existing) {
+                blocks.value_ptr.* = .{ .BoundedBlocks = .{} };
+            }
 
-            // zig fmt: off
-            var anchored_block: AnchoredBlock = .{
-                .file_index = file_index,
-                .block_index = block_index,
-                .short_size = BlockSize - left_over_bytes,
-                .hash = block.hash
-            };
-            // zig fmt: on
-
-            try anchored_hashes.addAnchoredBlock(anchored_block);
-
-            byte_offset += BlockSize;
+            switch (blocks.value_ptr.*) {
+                .BoundedBlocks => |*bounded_blocks| {
+                    bounded_blocks.append(idx) catch {
+                        var fallback_blocks = try std.ArrayList(usize).initCapacity(self.allocator, bounded_blocks.len * 2);
+                        fallback_blocks.appendSliceAssumeCapacity(bounded_blocks.slice());
+                        fallback_blocks.appendAssumeCapacity(idx);
+                        blocks.value_ptr.* = .{ .FallbackBlocks = fallback_blocks };
+                    };
+                },
+                .FallbackBlocks => |*fallback_blocks| {
+                    try fallback_blocks.append(idx);
+                },
+            }
         }
     }
 };

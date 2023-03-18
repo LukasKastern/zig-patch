@@ -332,7 +332,7 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
 
 pub const std_options = struct {
     // Set the log level to error
-    pub const log_level = .err;
+    pub const log_level = .debug;
 };
 
 pub fn main() !void {
@@ -341,7 +341,7 @@ pub fn main() !void {
         _ = std.os.windows.kernel32.SetConsoleOutputCP(65001);
     }
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .verbose_log = true }){};
     defer _ = gpa.deinit();
 
     var allocator = gpa.allocator();
@@ -355,7 +355,7 @@ pub fn main() !void {
 
     const command = std.meta.stringToEnum(CommandLineCommand, command_name) orelse show_main_help();
 
-    var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    var thread_pool = ThreadPool.init(.{ .max_threads = 12 });
     thread_pool.spawnThreads();
 
     switch (command) {

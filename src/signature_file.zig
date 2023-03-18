@@ -7,8 +7,8 @@ const WeakHashType = @import("block.zig").WeakHashType;
 const ProgressCallback = @import("operations.zig").ProgressCallback;
 
 pub const SignatureBlock = struct {
-    file_idx: usize,
-    block_idx: usize,
+    file_idx: u32,
+    block_idx: u32,
     hash: BlockHash,
 };
 
@@ -37,13 +37,17 @@ pub const SignatureFile = struct {
     blocks: std.ArrayList(SignatureBlock),
     path_name_buffer: [512]u8 = undefined,
 
+    // We reserve this buffer for signature file related allocations.
+    signature_file_allocator: std.heap.StackFallbackAllocator(1024 * 1024 * 8),
+
     pub fn init(allocator: std.mem.Allocator) !*SignatureFile {
         var signature_file = try allocator.create(SignatureFile);
-        signature_file.allocator = allocator;
-        signature_file.files = std.ArrayList(File).init(allocator);
-        signature_file.directories = std.ArrayList(Directory).init(allocator);
-        signature_file.sym_links = std.ArrayList(SymLink).init(allocator);
-        signature_file.blocks = std.ArrayList(SignatureBlock).init(allocator);
+        signature_file.signature_file_allocator.fallback_allocator = allocator;
+        signature_file.allocator = signature_file.signature_file_allocator.get();
+        signature_file.files = std.ArrayList(File).init(signature_file.allocator);
+        signature_file.directories = std.ArrayList(Directory).init(signature_file.allocator);
+        signature_file.sym_links = std.ArrayList(SymLink).init(signature_file.allocator);
+        signature_file.blocks = std.ArrayList(SignatureBlock).init(signature_file.allocator);
         return signature_file;
     }
 
@@ -70,7 +74,7 @@ pub const SignatureFile = struct {
         self.blocks.deinit();
         self.directories.deinit();
 
-        self.allocator.destroy(self);
+        self.signature_file_allocator.fallback_allocator.destroy(self);
     }
 
     const CalculateHashData = struct {
@@ -82,12 +86,13 @@ pub const SignatureFile = struct {
         task: ThreadPool.Task,
         blocks: *std.atomic.Atomic(usize),
         are_batches_done: *std.atomic.Atomic(u32),
-        file_idx: usize,
-        batch_in_file: usize,
+        file_idx: u32,
+        batch_in_file: u32,
         signature_file: *SignatureFile,
         dir: std.fs.Dir,
 
-        per_thread_block_hashes: std.ArrayList(std.ArrayList(SignatureBlock)),
+        out_hashes: [CalculateHashData.BlocksPerBatchOfWork]BlockHash,
+        num_processed_blocks: usize,
 
         const Self = @This();
 
@@ -111,10 +116,7 @@ pub const SignatureFile = struct {
 
             std.debug.assert(read_bytes > 0);
 
-            var thread_idx = ThreadPool.Thread.current.?.idx;
-            var hashes = &self.per_thread_block_hashes.items[thread_idx];
-
-            var processed_blocks: usize = 0;
+            var processed_blocks: u32 = 0;
             while (processed_blocks < CalculateHashData.BlocksPerBatchOfWork) : (processed_blocks += 1) {
                 const block_start_idx_in_buffer = processed_blocks * BlockSize;
                 var remaining_bytes = read_bytes - block_start_idx_in_buffer;
@@ -124,22 +126,21 @@ pub const SignatureFile = struct {
                 var rolling_hash: RollingHash = .{};
                 rolling_hash.recompute(block_data);
 
-                var block_hash: BlockHash = .{
-                    .weak_hash = rolling_hash.hash,
-                    .strong_hash = undefined,
-                };
+                self.out_hashes[processed_blocks].weak_hash = rolling_hash.hash;
 
-                std.crypto.hash.Md5.hash(block_data, &block_hash.strong_hash, .{});
+                std.crypto.hash.Md5.hash(block_data, &self.out_hashes[processed_blocks].strong_hash, .{});
 
-                var signature_block: SignatureBlock = .{ .file_idx = self.file_idx, .block_idx = start_block_idx + processed_blocks, .hash = block_hash };
+                // var signature_block: SignatureBlock = .{ .file_idx = self.file_idx, .block_idx = start_block_idx + processed_blocks, .hash = block_hash };
 
-                hashes.appendAssumeCapacity(signature_block);
+                // hashes.appendAssumeCapacity(signature_block);
 
                 // If this was the last block break out of the batch.
                 if (remaining_bytes <= BlockSize) {
                     break;
                 }
             }
+
+            self.num_processed_blocks = processed_blocks + 1;
 
             if (self.blocks.fetchSub(1, .Release) == 1) {
                 self.are_batches_done.store(1, .Release);
@@ -181,25 +182,11 @@ pub const SignatureFile = struct {
         var tasks = try self.allocator.alloc(CalculateHashData, num_batches_of_work);
         defer self.allocator.free(tasks);
 
-        var per_thread_block_hashes = std.ArrayList(std.ArrayList(SignatureBlock)).init(self.allocator);
-        defer per_thread_block_hashes.deinit();
-
-        try per_thread_block_hashes.resize(thread_pool.num_threads);
-        for (per_thread_block_hashes.items) |*item| {
-            item.* = try std.ArrayList(SignatureBlock).initCapacity(self.allocator, num_blocks);
-        }
-
-        defer {
-            for (per_thread_block_hashes.items) |*item| {
-                item.deinit();
-            }
-        }
-
         var batch = ThreadPool.Batch{};
-        var file_idx: usize = 0;
+        var file_idx: u32 = 0;
 
-        var batch_in_file: usize = 0;
-        var batch_idx: usize = 0;
+        var batch_in_file: u32 = 0;
+        var batch_idx: u32 = 0;
 
         while (batch_idx < num_batches_of_work) : (batch_idx += 1) {
             if (batch_in_file * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= self.files.items[file_idx].size) {
@@ -222,8 +209,9 @@ pub const SignatureFile = struct {
                 .file_idx = file_idx,
                 .batch_in_file = batch_in_file,
                 .signature_file = self,
-                .per_thread_block_hashes = per_thread_block_hashes,
+                .num_processed_blocks = 0,
                 .dir = root_dir,
+                .out_hashes = undefined,
             };
 
             batch.push(ThreadPool.Batch.from(&tasks[batch_idx].task));
@@ -246,8 +234,12 @@ pub const SignatureFile = struct {
             num_batches_remaining = batches_remaining.load(.Acquire);
         }
 
-        for (per_thread_block_hashes.items) |item| {
-            self.blocks.appendSliceAssumeCapacity(item.items);
+        for (tasks) |calculate_hash_data| {
+            const start_block_idx = calculate_hash_data.batch_in_file * CalculateHashData.BlocksPerBatchOfWork;
+
+            for (calculate_hash_data.out_hashes[0..calculate_hash_data.num_processed_blocks], 0..) |hash, idx| {
+                self.blocks.appendAssumeCapacity(.{ .file_idx = calculate_hash_data.file_idx, .block_idx = start_block_idx + @intCast(u32, idx), .hash = hash });
+            }
         }
 
         std.log.info("Blocks are done", .{});
@@ -343,8 +335,8 @@ pub const SignatureFile = struct {
 
         try writer.writeInt(usize, self.blocks.items.len, Endian);
         for (self.blocks.items) |block| {
-            try writer.writeInt(usize, block.file_idx, Endian);
-            try writer.writeInt(usize, block.block_idx, Endian);
+            try writer.writeInt(u32, block.file_idx, Endian);
+            try writer.writeInt(u32, block.block_idx, Endian);
             try writer.writeInt(WeakHashType, block.hash.weak_hash, Endian);
             try writer.writeAll(&block.hash.strong_hash);
         }
@@ -382,9 +374,11 @@ pub const SignatureFile = struct {
         const num_directories = try reader.readInt(usize, Endian);
         try signature_file.directories.resize(num_directories);
 
+        var total_allocated_len: usize = 0;
         for (signature_file.directories.items) |*directory| {
             const path_length = try reader.readInt(usize, Endian);
 
+            total_allocated_len += path_length;
             var path_buffer = try signature_file.allocator.alloc(u8, path_length);
             errdefer signature_file.allocator.free(path_buffer);
 
@@ -400,6 +394,7 @@ pub const SignatureFile = struct {
         for (signature_file.files.items) |*file| {
             const path_length = try reader.readInt(usize, Endian);
 
+            total_allocated_len += path_length;
             var path_buffer = try signature_file.allocator.alloc(u8, path_length);
             errdefer signature_file.allocator.free(path_buffer);
 
@@ -409,12 +404,13 @@ pub const SignatureFile = struct {
             file.permissions = try reader.readInt(u8, Endian);
         }
 
+        std.log.info("len={}", .{total_allocated_len});
         const num_blocks = try reader.readInt(usize, Endian);
         try signature_file.blocks.resize(num_blocks);
 
         for (signature_file.blocks.items) |*block| {
-            block.file_idx = try reader.readInt(usize, Endian);
-            block.block_idx = try reader.readInt(usize, Endian);
+            block.file_idx = try reader.readInt(u32, Endian);
+            block.block_idx = try reader.readInt(u32, Endian);
             block.hash.weak_hash = try reader.readInt(WeakHashType, Endian);
             try reader.readNoEof(&block.hash.strong_hash);
         }
