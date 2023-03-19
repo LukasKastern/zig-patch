@@ -4,12 +4,12 @@
 
     .dependencies = .{
         .zig_clap = .{
-            .url = "https://github.com/Hejsil/zig-clap/archive/cb13519431b916c05c6c783cb0ce3b232be5e400.tar.gz",
-            .hash = "1220e0fd678f5f684b296a260950a36de86de2b78d0664f6206510de4cb32e54f518",
+            .url = "https://github.com/LukasKastern/zig-clap/archive/a947131691dcef6d7eae00151e17dd79af145b06.tar.gz",
+            .hash = "1220d3514cdeeae378470958da25363febb1bd8fbbe2dc07655cea8f27c0e28a94c7"
         },
         .brotli = .{
-            .url = "https://github.com/LukasKastern/brotli/archive/abd29e993a419e61ce9954b2a071e978e9d6c9e7.tar.gz",
-            .hash = "12208fdc7a6479606f4b6648b6433327250bf8d256eb8a216fa5a4cde1dfb8cc809e",
+            .url = "https://github.com/LukasKastern/brotli/archive/860e2d0f445c352eff11a9f42ebe0245735ded04.tar.gz",
+            .hash = "12201d9d4a41c50e5078a0849cab8c4f6033a15182d57fb81564206d6bcfeb102bec",
         },
     },
 }
