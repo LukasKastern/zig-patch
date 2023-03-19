@@ -155,7 +155,7 @@ fn areDirectoriesEqual(lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *T
         }
 
         if (lhs_file.size != rhs_file.size) {
-            std.debug.print("File {s} expected size of {} but is {}\n", .{ lhs_file.name, lhs_file.size, rhs_file.size });
+            std.log.info("File {s} expected size of {} but is {}\n", .{ lhs_file.name, lhs_file.size, rhs_file.size });
             return false;
         }
     }
@@ -469,13 +469,13 @@ test "Patch should delete/create files and folders" {
     var pre_create_patch = timer.read();
     try operations.createPatch("Modified", "OriginalSignature", operation_config, null);
     var create_patch_sample = timer.read();
-    std.debug.print("Creating patch took {d:2}ms", .{(@intToFloat(f64, create_patch_sample) - @intToFloat(f64, pre_create_patch)) / 1000000});
+    std.log.info("Creating patch took {d:2}ms", .{(@intToFloat(f64, create_patch_sample) - @intToFloat(f64, pre_create_patch)) / 1000000});
 
     try operation_config.working_dir.rename("Patch.pwd", "PatchToModified.pwd");
     try operations.applyPatch("PatchToModified.pwd", "Original", operation_config, null);
 
     var end_sample = timer.read();
-    std.debug.print("Did test in {d:2}ms", .{(@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000});
+    std.log.info("Did test in {d:2}ms", .{(@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000});
 
     {
         var src_folder = try cwd.openDir(original_folder_path, .{});
