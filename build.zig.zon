@@ -11,5 +11,9 @@
             .url = "https://github.com/LukasKastern/brotli/archive/860e2d0f445c352eff11a9f42ebe0245735ded04.tar.gz",
             .hash = "12201d9d4a41c50e5078a0849cab8c4f6033a15182d57fb81564206d6bcfeb102bec",
         },
+        .zlib = .{
+            .url = "https://github.com/andrewrk/libz/archive/9e71b746b83d2b5bf5eb247663eb65a52cf0f68f.tar.gz",
+            .hash = "12204ea3490e5bdf379f56aa11784d906aed6d4c553c724fa5427169915f2cf4a651",
+        },
     },
 }

@@ -1,5 +1,4 @@
 const std = @import("std");
-const zlib = @import("third_party/zig-zlib/zlib.zig");
 
 pub fn build(b: *std.build.Builder) void {
     // Standard target options allows the person running `zig build` to choose
@@ -12,6 +11,11 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardOptimizeOption(.{});
 
+    var zlib_dep = b.dependency("zlib", .{
+        .target = target,
+        .optimize = mode,
+    });
+
     var brotli_dep = b.dependency("brotli", .{
         .target = target,
         .optimize = mode,
@@ -23,15 +27,12 @@ pub fn build(b: *std.build.Builder) void {
 
     const exe = b.addExecutable(.{ .name = "zig-patch", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = mode });
 
-    exe.addIncludePath("third_party\\zig-zlib\\zlib");
-
     exe.install();
 
-    var lib = zlib.create(b, target, mode);
-    exe.linkLibrary(lib.step);
     exe.linkLibrary(brotli_common);
     exe.linkLibrary(brotli_enc);
     exe.linkLibrary(brotli_dec);
+    exe.linkLibrary(zlib_dep.artifact("z"));
 
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
@@ -43,15 +44,10 @@ pub fn build(b: *std.build.Builder) void {
     run_step.dependOn(&run_cmd.step);
 
     const test_exe = b.addTest(.{ .name = "test", .target = target, .optimize = mode, .root_source_file = .{ .path = "src/main.zig" } });
-    exe.linkLibrary(brotli_common);
-    exe.linkLibrary(brotli_enc);
-    exe.linkLibrary(brotli_dec);
-
-    test_exe.addIncludePath("third_party\\zig-zlib\\zlib");
-    test_exe.linkLibrary(lib.step);
     test_exe.linkLibrary(brotli_common);
     test_exe.linkLibrary(brotli_enc);
     test_exe.linkLibrary(brotli_dec);
+    test_exe.linkLibrary(zlib_dep.artifact("z"));
 
     const install_test = b.addInstallArtifact(test_exe);
 
