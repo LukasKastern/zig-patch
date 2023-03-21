@@ -122,7 +122,7 @@ pub const AnchoredBlocksMap = struct {
 
     fn anchoredBlockFromSignatureBlock(signature_file: SignatureFile, signature_block: SignatureBlock) AnchoredBlock {
         var file = signature_file.files.items[signature_block.file_idx];
-        var left_over_bytes = std.math.min(BlockSize, file.size - BlockSize * signature_block.block_idx);
+        var left_over_bytes = std.math.min(BlockSize, file.size - BlockSize * @intCast(usize, signature_block.block_idx));
 
         return .{
             .file_index = signature_block.file_idx,

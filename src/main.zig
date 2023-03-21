@@ -326,7 +326,7 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
 
         var folder_size_GiB = @intToFloat(f32, make_signature_stats.total_signature_folder_size_bytes) / 1_073_741_824.0;
 
-        stdout.print("\r√ {d:.2}GiB ({} files, {} directories) @ {d:.2}s            \n", .{ folder_size_GiB, make_signature_stats.num_files, make_signature_stats.num_directories, operation_stats.total_operation_time / std.time.ms_per_s }) catch {};
+        stdout.print("\r√ {d:.2}GiB ({} files, {} directories) @ {d:.2}GiB/s            \n", .{ folder_size_GiB, make_signature_stats.num_files, make_signature_stats.num_directories, operation_stats.total_operation_time / std.time.ms_per_s }) catch {};
     }
 }
 
@@ -355,7 +355,7 @@ pub fn main() !void {
 
     const command = std.meta.stringToEnum(CommandLineCommand, command_name) orelse show_main_help();
 
-    var thread_pool = ThreadPool.init(.{ .max_threads = 12 });
+    var thread_pool = ThreadPool.init(.{ .max_threads = 6 });
     thread_pool.spawnThreads();
 
     switch (command) {

@@ -174,6 +174,11 @@ test "Operations for buffer without Reference should rebuild the original buffer
 
 const Endian = std.builtin.Endian.Big;
 
+// This is the minimum size an operation can take up in serialized memory.
+pub fn minPerOperationSize() usize {
+    return @sizeOf(usize) * 3;
+}
+
 pub fn saveOperations(operations: std.ArrayList(PatchOperation), writer: anytype) !void {
     try writer.writeInt(usize, operations.items.len, Endian);
 

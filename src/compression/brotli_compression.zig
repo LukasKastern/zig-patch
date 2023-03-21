@@ -44,7 +44,7 @@ const BrotliAllocator = struct {
         var slice = ptr_beginning_of_size[0..(allocation_size.* + @sizeOf(usize))];
 
         if (self_opaque) |self_opaque_safe| {
-            var self = @ptrCast(*Self, @alignCast(@alignOf(Self), self_opaque_safe));
+            var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), self_opaque_safe));
             self.backing_allocator.free(slice);
         }
     }

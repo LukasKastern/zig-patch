@@ -87,7 +87,7 @@ pub const SignatureFile = struct {
         blocks: *std.atomic.Atomic(usize),
         are_batches_done: *std.atomic.Atomic(u32),
         file_idx: u32,
-        batch_in_file: u32,
+        batch_in_file: usize,
         signature_file: *SignatureFile,
         dir: std.fs.Dir,
 
@@ -189,7 +189,7 @@ pub const SignatureFile = struct {
         var batch_idx: u32 = 0;
 
         while (batch_idx < num_batches_of_work) : (batch_idx += 1) {
-            if (batch_in_file * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= self.files.items[file_idx].size) {
+            if (@intCast(usize, batch_in_file) * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= self.files.items[file_idx].size) {
                 file_idx += 1;
                 batch_in_file = 0;
             }
@@ -238,7 +238,7 @@ pub const SignatureFile = struct {
             const start_block_idx = calculate_hash_data.batch_in_file * CalculateHashData.BlocksPerBatchOfWork;
 
             for (calculate_hash_data.out_hashes[0..calculate_hash_data.num_processed_blocks], 0..) |hash, idx| {
-                self.blocks.appendAssumeCapacity(.{ .file_idx = calculate_hash_data.file_idx, .block_idx = start_block_idx + @intCast(u32, idx), .hash = hash });
+                self.blocks.appendAssumeCapacity(.{ .file_idx = calculate_hash_data.file_idx, .block_idx = @intCast(u32, start_block_idx) + @intCast(u32, idx), .hash = hash });
             }
         }
 
