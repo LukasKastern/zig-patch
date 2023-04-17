@@ -31,7 +31,7 @@
       },
       "request": "launch",
       "program": "${workspaceFolder}/zig-out/bin/zig-patch.exe",
-      "args": ["make_signature", "--source_folder", "D:/Users/Administrator/Downloads/Build2/Build", "--output_file", "D:/Projects/Personal/zig-patch/zig-out/bin/Signature"],
+      "args": ["make_signature", "--source_folder", "D:/Users/Administrator/Downloads/clinique-test-builds/BuildOne", "--output_file", "D:/Projects/Personal/zig-patch/zig-out/bin/Signature"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -70,7 +70,6 @@
       "request": "launch",
       "program": "${workspaceFolder}/zig-out/bin/test.exe",
       "args": [
-        "zig"
       ],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",

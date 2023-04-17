@@ -11,7 +11,7 @@ const BrotliAllocator = struct {
 
     backing_allocator: std.mem.Allocator,
 
-    pub export fn alloc(self_opaque: ?*anyopaque, size: usize) ?*anyopaque {
+    pub export fn alloc_brotli(self_opaque: ?*anyopaque, size: usize) ?*anyopaque {
         if (self_opaque) |self_opaque_safe| {
             var self = @ptrCast(*Self, @alignCast(@alignOf(Self), self_opaque_safe));
 
@@ -32,7 +32,7 @@ const BrotliAllocator = struct {
         return null;
     }
 
-    pub export fn free(self_opaque: ?*anyopaque, ptr: ?*anyopaque) void {
+    pub export fn free_brotli(self_opaque: ?*anyopaque, ptr: ?*anyopaque) void {
         if (ptr == null) {
             return;
         }
@@ -65,7 +65,7 @@ pub const BrotliCompression = struct {
                 .backing_allocator = allocator,
             };
 
-            var encoderInstance = brotli.BrotliEncoderCreateInstance(BrotliAllocator.alloc, BrotliAllocator.free, &deflate.brotli_allocator);
+            var encoderInstance = brotli.BrotliEncoderCreateInstance(BrotliAllocator.alloc_brotli, BrotliAllocator.free_brotli, &deflate.brotli_allocator);
             if (encoderInstance == null) {
                 return error.BrotliEncoderInitializationFailed;
             }
@@ -77,7 +77,7 @@ pub const BrotliCompression = struct {
 
             var window_bits = brotli.BROTLI_DEFAULT_WINDOW;
             var mode = @intCast(c_uint, brotli.BROTLI_DEFAULT_MODE);
-            var quality: usize = 5;
+            var quality: usize = 4;
 
             _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_LGWIN, @intCast(u32, window_bits));
             _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_QUALITY, @intCast(u32, quality));
@@ -127,7 +127,7 @@ pub const BrotliCompression = struct {
 
             inflate.allocator = allocator;
 
-            var decoder_instance = brotli.BrotliDecoderCreateInstance(BrotliAllocator.alloc, BrotliAllocator.free, &inflate.brotli_allocator);
+            var decoder_instance = brotli.BrotliDecoderCreateInstance(BrotliAllocator.alloc_brotli, BrotliAllocator.free_brotli, &inflate.brotli_allocator);
             if (decoder_instance == null) {
                 return error.BrotliEncoderInitializationFailed;
             }
@@ -187,11 +187,11 @@ test "Try Initialize Brotli" {
         .backing_allocator = std.testing.allocator,
     };
 
-    var encoderInstance = brotli.BrotliEncoderCreateInstance(BrotliAllocator.alloc, BrotliAllocator.free, &brotli_allocator);
+    var encoderInstance = brotli.BrotliEncoderCreateInstance(BrotliAllocator.alloc_brotli, BrotliAllocator.free_brotli, &brotli_allocator);
     defer brotli.BrotliEncoderDestroyInstance(encoderInstance);
 
     try std.testing.expect(encoderInstance != null);
 
-    var allocation = @ptrCast(?*u8, BrotliAllocator.alloc(&brotli_allocator, 32));
-    defer BrotliAllocator.free(&brotli_allocator, allocation);
+    var allocation = @ptrCast(?*u8, BrotliAllocator.alloc_brotli(&brotli_allocator, 32));
+    defer BrotliAllocator.free_brotli(&brotli_allocator, allocation);
 }

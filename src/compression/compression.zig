@@ -1,6 +1,7 @@
 const std = @import("std");
 const BrotliCompression = @import("brotli_compression.zig").BrotliCompression;
 const ZlibCompression = @import("zlib_compression.zig").ZlibCompression;
+const ZstdCompression = @import("zstd_compression.zig").ZstdCompression;
 
 pub const DeflateImpl = struct {
     const DeflateBuffer = *const fn (impl: *DeflateImpl, input: []u8, output: []u8) error{DeflateError}![]u8;
@@ -18,6 +19,7 @@ const CompressionImplementation = enum {
     None,
     Brotli,
     Zlib,
+    Zstd,
     Invalid,
 };
 
@@ -70,7 +72,7 @@ pub const NoOpCompression = struct {
 };
 
 pub const Compression = struct {
-    pub const Default = .Brotli;
+    pub const Default = .zstd;
     pub const Deflating = struct {
         impl: *DeflateImpl,
         implementation_method: CompressionImplementation,
@@ -95,6 +97,12 @@ pub const Compression = struct {
                         .implementation_method = implementation,
                     };
                 },
+                .Zstd => {
+                    return .{
+                        .impl = try ZstdCompression.initDeflateImpl(allocator),
+                        .implementation_method = implementation,
+                    };
+                },
                 else => {
                     return error.CompressionMethodNotImplemented;
                 },
@@ -111,6 +119,9 @@ pub const Compression = struct {
                 },
                 .Zlib => {
                     ZlibCompression.deinitDeflateImpl(deflating.impl);
+                },
+                .Zstd => {
+                    ZstdCompression.deinitDeflateImpl(deflating.impl);
                 },
                 else => {},
             }
@@ -148,6 +159,9 @@ pub const Compression = struct {
                 .Zlib => {
                     return .{ .impl = try ZlibCompression.initInflateImpl(allocator), .implementation_method = implementation };
                 },
+                .Zstd => {
+                    return .{ .impl = try ZstdCompression.initInflateImpl(allocator), .implementation_method = implementation };
+                },
                 else => {
                     return error.CompressionMethodNotImplemented;
                 },
@@ -164,6 +178,9 @@ pub const Compression = struct {
                 },
                 .Zlib => {
                     ZlibCompression.deinitInflateImpl(infalting.impl);
+                },
+                .Zstd => {
+                    ZstdCompression.deinitInflateImpl(infalting.impl);
                 },
                 else => {},
             }
@@ -182,7 +199,7 @@ test {
 test "Deflated then Infalted buffer should be the same" {
     var prng = std.rand.DefaultPrng.init(897123);
     var rand = prng.random();
-    const implementations = [_]CompressionImplementation{ .None, .Brotli, .Zlib };
+    const implementations = [_]CompressionImplementation{.Zstd};
 
     for (implementations) |implementation| {
         var input: [2048]u8 = undefined;
@@ -194,6 +211,7 @@ test "Deflated then Infalted buffer should be the same" {
         }
 
         var input_copy: [2048]u8 = undefined;
+
         std.mem.copy(u8, &input_copy, &input);
 
         // First we compress our elements

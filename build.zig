@@ -25,14 +25,58 @@ pub fn build(b: *std.build.Builder) void {
     var brotli_enc = brotli_dep.artifact("brotliencoder");
     var brotli_dec = brotli_dep.artifact("brotlidec");
 
+    const zstd = b.addStaticLibrary(.{
+        .name = "zstd",
+        .target = target,
+        .optimize = mode,
+    });
+
+    zstd.linkLibC();
+
+    const zstd_root = "third_party/zstd-dev/lib/";
+
+    zstd.addCSourceFiles(&.{
+        zstd_root ++ "/common/debug.c",
+        zstd_root ++ "/common/entropy_common.c",
+        zstd_root ++ "/common/error_private.c",
+        zstd_root ++ "/common/fse_decompress.c",
+        zstd_root ++ "/common/pool.c",
+        zstd_root ++ "/common/threading.c",
+        zstd_root ++ "/common/xxhash.c",
+        zstd_root ++ "/common/zstd_common.c",
+
+        zstd_root ++ "/compress/fse_compress.c",
+        zstd_root ++ "/compress/hist.c",
+        zstd_root ++ "/compress/huf_compress.c",
+        zstd_root ++ "/compress/zstd_compress.c",
+        zstd_root ++ "/compress/zstd_compress_literals.c",
+        zstd_root ++ "/compress/zstd_compress_sequences.c",
+        zstd_root ++ "/compress/zstd_compress_superblock.c",
+        zstd_root ++ "/compress/zstd_double_fast.c",
+        zstd_root ++ "/compress/zstd_fast.c",
+        zstd_root ++ "/compress/zstd_lazy.c",
+        zstd_root ++ "/compress/zstd_ldm.c",
+        zstd_root ++ "/compress/zstd_opt.c",
+        zstd_root ++ "/compress/zstdmt_compress.c",
+
+        zstd_root ++ "/decompress/huf_decompress.c",
+        zstd_root ++ "/decompress/zstd_ddict.c",
+        zstd_root ++ "/decompress/zstd_decompress.c",
+        zstd_root ++ "/decompress/zstd_decompress_block.c",
+    }, &.{});
+
+    zstd.addIncludePath(zstd_root);
+
     const exe = b.addExecutable(.{ .name = "zig-patch", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = mode });
 
     exe.install();
 
+    exe.linkLibrary(zstd);
     exe.linkLibrary(brotli_common);
     exe.linkLibrary(brotli_enc);
     exe.linkLibrary(brotli_dec);
     exe.linkLibrary(zlib_dep.artifact("z"));
+    exe.addIncludePath(zstd_root);
 
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
@@ -48,6 +92,8 @@ pub fn build(b: *std.build.Builder) void {
     test_exe.linkLibrary(brotli_enc);
     test_exe.linkLibrary(brotli_dec);
     test_exe.linkLibrary(zlib_dep.artifact("z"));
+    test_exe.linkLibrary(zstd);
+    test_exe.addIncludePath(zstd_root);
 
     const install_test = b.addInstallArtifact(test_exe);
 

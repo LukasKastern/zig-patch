@@ -7,7 +7,7 @@
             "label": "build",
             "type": "shell",
             "command": "${config:zig.zigPath}",
-            "args": [
+            "args": [   
                 "build",
                 "-Doptimize=ReleaseFast",
             ],
@@ -47,7 +47,7 @@
             "args": [
                 "build",
                 "build-test",
-                "-Doptimize=ReleaseSafe",
+                "-Doptimize=Debug",
 
             ],
             "group": {
