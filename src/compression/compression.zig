@@ -72,7 +72,7 @@ pub const NoOpCompression = struct {
 };
 
 pub const Compression = struct {
-    pub const Default = .zstd;
+    pub const Default = .Zstd;
     pub const Deflating = struct {
         impl: *DeflateImpl,
         implementation_method: CompressionImplementation,
