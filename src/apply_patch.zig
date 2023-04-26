@@ -11,17 +11,21 @@ const BlockSize = @import("block.zig").BlockSize;
 const Compression = @import("compression/compression.zig").Compression;
 const ApplyPatchStats = @import("operations.zig").OperationStats.ApplyPatchStats;
 const ProgressCallback = @import("operations.zig").ProgressCallback;
+const PatchIO = @import("io/patch_io.zig");
 
 pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
     const old_signature = patch.old;
     const new_signature = patch.new;
 
+    var old_signature_data = old_signature.signature_file_data.?.InMemorySignatureFile;
+    var new_signature_data = new_signature.signature_file_data.?.OnDiskSignatureFile;
+
     // Delete all files that do not exist anymore
-    for (old_signature.files.items) |file| {
+    for (old_signature_data.files.items) |file| {
         var does_file_still_exist = false;
 
-        for (new_signature.files.items) |new_signature_file| {
-            does_file_still_exist = does_file_still_exist or std.mem.eql(u8, new_signature_file.name, file.name);
+        for (new_signature_data.locked_directory.files.items) |new_signature_file| {
+            does_file_still_exist = does_file_still_exist or std.mem.eql(u8, new_signature_file.resolvePath(new_signature_data.locked_directory), file.name);
         }
 
         if (!does_file_still_exist) {
@@ -30,11 +34,11 @@ pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
     }
 
     // Delete all directories that do not exist anymore
-    for (old_signature.directories.items) |directory| {
+    for (old_signature_data.directories.items) |directory| {
         var does_dir_still_exist = false;
 
-        for (new_signature.directories.items) |new_directory_file| {
-            does_dir_still_exist = does_dir_still_exist or std.mem.eql(u8, new_directory_file.path, directory.path);
+        for (new_signature_data.locked_directory.directories.items) |new_directory_file| {
+            does_dir_still_exist = does_dir_still_exist or std.mem.eql(u8, new_directory_file.resolvePath(new_signature_data.locked_directory), directory.path);
         }
 
         if (!does_dir_still_exist) {
@@ -44,27 +48,27 @@ pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
     }
 
     // Now reverse the order operation and create all directories + files that did not exist in the old signature
-    for (new_signature.directories.items) |directory| {
+    for (new_signature_data.locked_directory.directories.items) |directory| {
         var did_dir_exist = false;
 
-        for (old_signature.directories.items) |old_directory_file| {
-            did_dir_exist = did_dir_exist or std.mem.eql(u8, old_directory_file.path, directory.path);
+        for (old_signature_data.directories.items) |old_directory_file| {
+            did_dir_exist = did_dir_exist or std.mem.eql(u8, old_directory_file.path, directory.resolvePath(new_signature_data.locked_directory));
         }
 
         if (!did_dir_exist) {
-            try target_dir.makePath(directory.path);
+            try target_dir.makePath(directory.resolvePath(new_signature_data.locked_directory));
         }
     }
 
-    for (new_signature.files.items) |file| {
+    for (new_signature_data.locked_directory.files.items) |file| {
         var did_file_exist = false;
 
-        for (old_signature.files.items) |old_file| {
-            did_file_exist = did_file_exist or std.mem.eql(u8, old_file.name, file.name);
+        for (old_signature_data.files.items) |old_file| {
+            did_file_exist = did_file_exist or std.mem.eql(u8, old_file.name, file.resolvePath(new_signature_data.locked_directory));
         }
 
         if (!did_file_exist) {
-            var new_file_fs = try target_dir.createFile(file.name, .{});
+            var new_file_fs = try target_dir.createFile(file.resolvePath(new_signature_data.locked_directory), .{});
             new_file_fs.close();
         }
     }
@@ -84,7 +88,8 @@ const ApplyPatchTask = struct {
     target_dir: std.fs.Dir,
     per_thread_patch_files: []std.fs.File,
     section: FileSection,
-    file: SignatureFile.File,
+    file: PatchIO.FileInfo,
+    locked_directory: PatchIO.LockedDirectory,
 
     per_thread_operations_buffer: [][]u8,
     per_thread_read_buffers: [][]u8,
@@ -112,7 +117,7 @@ const ApplyPatchTask = struct {
 
         var file_reader = patch_file.reader();
 
-        var target_file = try self.target_dir.openFile(self.file.name, .{
+        var target_file = try self.target_dir.openFile(self.file.resolvePath(self.locked_directory), .{
             .mode = .write_only,
         });
         defer target_file.close();
@@ -156,7 +161,9 @@ const ApplyPatchTask = struct {
                     var block_range = operation.BlockRange;
                     var block = self.anchored_blocks_map.getBlock(block_range.file_index, block_range.block_index);
 
-                    var src_file = self.old_signature.files.items[block.file_index];
+                    var old_signature_file_data = self.old_signature.signature_file_data.?.InMemorySignatureFile;
+
+                    var src_file = old_signature_file_data.files.items[block.file_index];
                     var file = try self.source_dir.?.openFile(src_file.name, .{});
                     defer file.close();
 
@@ -255,7 +262,8 @@ pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: 
             .sections_remaining = &sections_remaining, 
             .per_thread_patch_files = per_thread_patch_files, 
             .task = ThreadPool.Task{ .callback = ApplyPatchTask.applyPatch }, 
-            .file = patch.new.files.items[section.file_idx] 
+            .file = patch.new.signature_file_data.?.OnDiskSignatureFile.locked_directory.files.items[section.file_idx],
+            .locked_directory =  patch.new.signature_file_data.?.OnDiskSignatureFile.locked_directory,
         };
         // zig fmt: on
 

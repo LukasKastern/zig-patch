@@ -153,9 +153,11 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
 
         fn read(patch_file_io: *PatchFileIO, file_info: PatchFileInfo, read_buffer: []u8) error{ReadPatchError}!usize {
             var self = @fieldParentPtr(@This(), "file_io", patch_file_io);
-            var file = self.signature_file.files.items[file_info.file_idx];
 
-            var fs_file = self.build_dir.openFile(file.name, .{}) catch return error.ReadPatchError;
+            var signature_file_data = &self.signature_file.signature_file_data.?.OnDiskSignatureFile;
+            var file = signature_file_data.locked_directory.files.items[file_info.file_idx];
+
+            var fs_file = self.build_dir.openFile(file.resolvePath(signature_file_data.locked_directory), .{}) catch return error.ReadPatchError;
             defer fs_file.close();
 
             fs_file.seekTo(file_info.file_part_idx * self.max_work_unit_size) catch return error.ReadPatchError;
@@ -214,7 +216,7 @@ fn numPatchFilesNeeded(signature: *SignatureFile, work_unit_size: usize) usize {
 fn numRealFilesInPatch(signature: *SignatureFile) usize {
     var num_patch_files: usize = 0;
 
-    for (signature.files.items) |file| {
+    for (signature.signature_file_data.?.OnDiskSignatureFile.locked_directory.files.items) |file| {
         if (file.size > 0) {
             num_patch_files += 1;
         }
@@ -265,7 +267,9 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
     var file_idx_in_patch: usize = 0;
 
     while (file_idx_in_patch < num_files) : (file_idx_in_patch += 1) {
-        var file = new_signature.files.items[file_idx];
+        var on_disk_signature = &new_signature.signature_file_data.?.OnDiskSignatureFile;
+
+        var file = on_disk_signature.locked_directory.files.items[file_idx];
 
         if (progress_callback) |progress_callback_unwrapped| {
             var progress = @intToFloat(f32, file_idx_in_patch) / @intToFloat(f32, num_files);
@@ -278,7 +282,7 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
             if (file_idx == num_files)
                 break;
 
-            file = new_signature.files.items[file_idx];
+            file = on_disk_signature.locked_directory.files.items[file_idx];
         }
 
         var num_parts = @floatToInt(usize, @ceil(@intToFloat(f64, file.size) / @intToFloat(f64, options.max_work_unit_size)));
@@ -343,7 +347,6 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
     _ = progress_callback;
     _ = thread_pool;
     _ = new_signature;
-
 }
 
 // pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOperationsOptions, patch_stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {

@@ -34,16 +34,18 @@ pub const AnchoredBlocksMap = struct {
         self.allocator = allocator;
         self.underlying_hash_map = HashMapType.init(allocator);
 
+        var signature_file_data = &signature_file.signature_file_data.?.InMemorySignatureFile;
+
         self.all_blocks = try std.ArrayList(AnchoredBlock).initCapacity(allocator, signature_file.blocks.items.len);
-        self.block_start_by_file = try std.ArrayList(usize).initCapacity(allocator, signature_file.files.items.len);
+        self.block_start_by_file = try std.ArrayList(usize).initCapacity(allocator, signature_file_data.files.items.len);
 
         try self.all_blocks.resize(signature_file.blocks.items.len);
-        try self.block_start_by_file.resize(signature_file.files.items.len);
+        try self.block_start_by_file.resize(signature_file_data.files.items.len);
 
         var current_block_start: usize = 0;
 
         for (self.block_start_by_file.items, 0..) |*element, idx| {
-            var file = signature_file.files.items[idx];
+            var file = signature_file_data.files.items[idx];
             element.* = current_block_start;
 
             var num_blocks_per_file = @floatToInt(usize, @ceil(@intToFloat(f64, file.size) / BlockSize));
@@ -53,7 +55,9 @@ pub const AnchoredBlocksMap = struct {
         for (signature_file.blocks.items) |block| {
             var start_idx = self.block_start_by_file.items[block.file_idx];
 
-            self.all_blocks.items[start_idx + block.block_idx] = anchoredBlockFromSignatureBlock(signature_file, block);
+            var file_size = signature_file_data.files.items[block.file_idx].size;
+
+            self.all_blocks.items[start_idx + block.block_idx] = anchoredBlockFromSignatureBlock(file_size, block);
         }
 
         try self.underlying_hash_map.ensureTotalCapacity(@truncate(u32, signature_file.blocks.items.len));
@@ -120,9 +124,8 @@ pub const AnchoredBlocksMap = struct {
         return self.underlying_hash_map.contains(weak_hash);
     }
 
-    fn anchoredBlockFromSignatureBlock(signature_file: SignatureFile, signature_block: SignatureBlock) AnchoredBlock {
-        var file = signature_file.files.items[signature_block.file_idx];
-        var left_over_bytes = std.math.min(BlockSize, file.size - BlockSize * @intCast(usize, signature_block.block_idx));
+    fn anchoredBlockFromSignatureBlock(file_size: usize, signature_block: SignatureBlock) AnchoredBlock {
+        var left_over_bytes = std.math.min(BlockSize, file_size - BlockSize * @intCast(usize, signature_block.block_idx));
 
         return .{
             .file_index = signature_block.file_idx,

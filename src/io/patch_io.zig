@@ -72,11 +72,11 @@ pub fn deinit(self: *Self) void {
 }
 
 // Locks are directory and returns a directory information structure.
-pub fn lockDirectory(self: *Self, path: []const u8, allocator: std.mem.Allocator) PatchIOErrors!LockedDirectory {
+pub fn lockDirectory(self: *const Self, path: []const u8, allocator: std.mem.Allocator) PatchIOErrors!LockedDirectory {
     return self.impl.lock_directory(self.impl, path, allocator);
 }
 
-pub fn unlockDirectory(self: *Self, locked_dir: LockedDirectory) void {
+pub fn unlockDirectory(self: *const Self, locked_dir: LockedDirectory) void {
     return self.impl.unlock_directory(self.impl, locked_dir);
 }
 

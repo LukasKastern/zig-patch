@@ -6,6 +6,8 @@ const ThreadPool = @import("zap/thread_pool_go_based.zig");
 const WeakHashType = @import("block.zig").WeakHashType;
 const ProgressCallback = @import("operations.zig").ProgressCallback;
 
+const PatchIO = @import("io/patch_io.zig");
+
 pub const SignatureBlock = struct {
     file_idx: u32,
     block_idx: u32,
@@ -15,27 +17,29 @@ pub const SignatureBlock = struct {
 pub const SignatureFile = struct {
     const Directory = struct {
         path: []u8,
-        permissions: u8,
-    };
-
-    const SymLink = struct {
-        source: []u8,
-        target: []u8,
-        permissions: u8,
     };
 
     pub const File = struct {
         name: []const u8,
         size: usize,
-        permissions: u8,
+    };
+
+    const SignatureFileData = union(enum) {
+        InMemorySignatureFile: struct {
+            directories: std.ArrayList(Directory),
+            files: std.ArrayList(File),
+        },
+
+        OnDiskSignatureFile: struct {
+            io: PatchIO,
+            locked_directory: PatchIO.LockedDirectory,
+        },
     };
 
     allocator: std.mem.Allocator,
-    directories: std.ArrayList(Directory),
-    sym_links: std.ArrayList(SymLink),
-    files: std.ArrayList(File),
+
+    signature_file_data: ?SignatureFileData,
     blocks: std.ArrayList(SignatureBlock),
-    path_name_buffer: [512]u8 = undefined,
 
     // We reserve this buffer for signature file related allocations.
     signature_file_allocator: std.heap.StackFallbackAllocator(1024 * 1024 * 8),
@@ -44,36 +48,40 @@ pub const SignatureFile = struct {
         var signature_file = try allocator.create(SignatureFile);
         signature_file.signature_file_allocator.fallback_allocator = allocator;
         signature_file.allocator = signature_file.signature_file_allocator.get();
-        signature_file.files = std.ArrayList(File).init(signature_file.allocator);
-        signature_file.directories = std.ArrayList(Directory).init(signature_file.allocator);
-        signature_file.sym_links = std.ArrayList(SymLink).init(signature_file.allocator);
+        signature_file.signature_file_data = null;
         signature_file.blocks = std.ArrayList(SignatureBlock).init(signature_file.allocator);
         return signature_file;
     }
 
     fn deallocateBuffers(self: *SignatureFile) void {
-        for (self.directories.items) |directory| {
-            self.allocator.free(directory.path);
+        if (self.signature_file_data) |signature_file_data| {
+            switch (signature_file_data) {
+                .InMemorySignatureFile => |*in_memory| {
+                    for (in_memory.directories.items) |directory| {
+                        self.allocator.free(directory.path);
+                    }
+
+                    for (in_memory.files.items) |file| {
+                        self.allocator.free(file.name);
+                    }
+
+                    in_memory.files.deinit();
+                    in_memory.directories.deinit();
+                },
+                .OnDiskSignatureFile => |*on_disk| {
+                    on_disk.io.unlockDirectory(on_disk.locked_directory);
+                },
+            }
         }
 
-        for (self.files.items) |file| {
-            self.allocator.free(file.name);
-        }
-
-        self.sym_links.clearRetainingCapacity();
-        self.directories.clearRetainingCapacity();
-        self.files.clearRetainingCapacity();
+        self.signature_file_data = null;
         self.blocks.clearRetainingCapacity();
     }
 
     pub fn deinit(self: *SignatureFile) void {
         self.deallocateBuffers();
 
-        self.files.deinit();
-        self.sym_links.deinit();
         self.blocks.deinit();
-        self.directories.deinit();
-
         self.signature_file_allocator.fallback_allocator.destroy(self);
     }
 
@@ -102,12 +110,14 @@ pub const SignatureFile = struct {
         }
 
         fn calculate_hash_impl(self: *Self) !void {
-            const signature_file = self.signature_file.files.items[self.file_idx];
+            var on_disk_signature = self.signature_file.signature_file_data.?.OnDiskSignatureFile;
+
+            const signature_file = on_disk_signature.locked_directory.files.items[self.file_idx];
 
             const start_block_idx = self.batch_in_file * CalculateHashData.BlocksPerBatchOfWork;
             const read_offset = start_block_idx * BlockSize;
 
-            var file = try self.dir.openFile(signature_file.name, .{});
+            var file = try self.dir.openFile(signature_file.resolvePath(on_disk_signature.locked_directory), .{});
             defer file.close();
 
             var buffer: [BlockSize * CalculateHashData.BlocksPerBatchOfWork]u8 = undefined;
@@ -130,10 +140,6 @@ pub const SignatureFile = struct {
 
                 std.crypto.hash.Md5.hash(block_data, &self.out_hashes[processed_blocks].strong_hash, .{});
 
-                // var signature_block: SignatureBlock = .{ .file_idx = self.file_idx, .block_idx = start_block_idx + processed_blocks, .hash = block_hash };
-
-                // hashes.appendAssumeCapacity(signature_block);
-
                 // If this was the last block break out of the batch.
                 if (remaining_bytes <= BlockSize) {
                     break;
@@ -149,19 +155,24 @@ pub const SignatureFile = struct {
         }
     };
 
-    pub fn generateFromFolder(self: *SignatureFile, dir: std.fs.Dir, thread_pool: *ThreadPool, on_progress: ?ProgressCallback) !void {
+    pub fn generateFromFolder(self: *SignatureFile, dir: []const u8, thread_pool: *ThreadPool, on_progress: ?ProgressCallback, patch_io: PatchIO) !void {
         self.deallocateBuffers();
 
-        var root_dir = dir;
+        var locked_folder = patch_io.lockDirectory(dir, self.allocator) catch {
+            return error.SignatureFolderNotFound;
+        };
 
-        var empty_path: [0]u8 = undefined;
+        errdefer patch_io.unlockDirectory(locked_folder);
 
-        try self.generateFromFolderImpl(root_dir, &empty_path);
+        self.signature_file_data = .{ .OnDiskSignatureFile = .{ .locked_directory = locked_folder, .io = patch_io } };
+
+        var dir_handle = try std.fs.cwd().openDir(dir, .{});
+        defer dir_handle.close();
 
         var num_batches_of_work: usize = 0;
         var num_blocks: usize = 0;
 
-        for (self.files.items) |signature_file| {
+        for (locked_folder.files.items) |signature_file| {
             if (signature_file.size == 0) {
                 continue;
             }
@@ -189,16 +200,16 @@ pub const SignatureFile = struct {
         var batch_idx: u32 = 0;
 
         while (batch_idx < num_batches_of_work) : (batch_idx += 1) {
-            if (@intCast(usize, batch_in_file) * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= self.files.items[file_idx].size) {
+            if (@intCast(usize, batch_in_file) * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= locked_folder.files.items[file_idx].size) {
                 file_idx += 1;
                 batch_in_file = 0;
             }
 
-            while (self.files.items[file_idx].size == 0) {
+            while (locked_folder.files.items[file_idx].size == 0) {
                 file_idx += 1;
             }
 
-            var current_file = self.files.items[file_idx];
+            var current_file = locked_folder.files.items[file_idx];
 
             std.debug.assert(current_file.size > 0);
 
@@ -210,7 +221,7 @@ pub const SignatureFile = struct {
                 .batch_in_file = batch_in_file,
                 .signature_file = self,
                 .num_processed_blocks = 0,
-                .dir = root_dir,
+                .dir = dir_handle,
                 .out_hashes = undefined,
             };
 
@@ -245,46 +256,10 @@ pub const SignatureFile = struct {
         std.log.info("Blocks are done", .{});
     }
 
-    fn generateFromFolderImpl(self: *SignatureFile, directory: std.fs.Dir, parent_path: []u8) !void {
-        var iteratable_dir = try directory.makeOpenPathIterable("", .{});
-        defer iteratable_dir.close();
-
-        var iterator = iteratable_dir.iterate();
-
-        while (try iterator.next()) |entry| {
-            var full_entry_name = try directory.realpath(entry.name, &self.path_name_buffer);
-
-            var entry_path: []u8 = undefined;
-
-            if (parent_path.len > 0) {
-                entry_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ parent_path, entry.name });
-            } else {
-                entry_path = try std.fmt.allocPrint(self.allocator, "{s}", .{entry.name});
-            }
-
-            switch (entry.kind) {
-                .Directory => {
-                    var nested_dir = try directory.openDir(entry.name, .{});
-                    defer nested_dir.close();
-
-                    try self.generateFromFolderImpl(nested_dir, entry_path);
-                    try self.directories.append(.{ .path = entry_path, .permissions = 0 });
-                },
-                .File => {
-                    var file = try directory.openFile(entry.name, .{});
-                    defer file.close();
-
-                    try self.files.append(.{ .name = entry_path, .size = try file.getEndPos(), .permissions = 0 });
-                },
-                else => {
-                    std.log.warn("Found unsupported file type={}, at path={s}", .{ entry.kind, full_entry_name });
-                },
-            }
-        }
-    }
-
     pub fn validateFolderMatchesSignature(self: *SignatureFile, reference_folder: std.fs.Dir) bool {
-        for (self.directories.items) |directory| {
+        var in_memory_signature = self.signature_file_data.?.InMemorySignatureFile;
+
+        for (in_memory_signature.directories.items) |directory| {
             reference_folder.access(directory.path, .{}) catch |e| {
                 switch (e) {
                     else => return false,
@@ -292,7 +267,7 @@ pub const SignatureFile = struct {
             };
         }
 
-        for (self.files.items) |file| {
+        for (in_memory_signature.files.items) |file| {
             reference_folder.access(file.name, .{}) catch |e| {
                 switch (e) {
                     else => return false,
@@ -314,23 +289,25 @@ pub const SignatureFile = struct {
         try writer.writeAll(TypeTag);
         try writer.writeInt(usize, SerializationVersion, Endian);
 
-        try writer.writeInt(usize, self.directories.items.len, Endian);
-        for (self.directories.items) |directory| {
-            // Write Length of the path
-            try writer.writeInt(usize, directory.path.len, Endian);
-            try writer.writeAll(directory.path);
+        var signature_file_data = self.signature_file_data.?.OnDiskSignatureFile;
 
-            try writer.writeInt(u8, directory.permissions, Endian);
+        try writer.writeInt(usize, signature_file_data.locked_directory.directories.items.len, Endian);
+        for (signature_file_data.locked_directory.directories.items) |directory| {
+            var path = directory.resolvePath(signature_file_data.locked_directory);
+            // Write Length of the path
+
+            try writer.writeInt(usize, path.len, Endian);
+            try writer.writeAll(path);
         }
 
-        try writer.writeInt(usize, self.files.items.len, Endian);
-        for (self.files.items) |signature_file| {
+        try writer.writeInt(usize, signature_file_data.locked_directory.files.items.len, Endian);
+        for (signature_file_data.locked_directory.files.items) |signature_file| {
             // Write Length of the path
-            try writer.writeInt(usize, signature_file.name.len, Endian);
-            try writer.writeAll(signature_file.name);
+            var path = signature_file.resolvePath(signature_file_data.locked_directory);
+            try writer.writeInt(usize, path.len, Endian);
+            try writer.writeAll(path);
 
             try writer.writeInt(usize, signature_file.size, Endian);
-            try writer.writeInt(u8, signature_file.permissions, Endian);
         }
 
         try writer.writeInt(usize, self.blocks.items.len, Endian);
@@ -372,10 +349,16 @@ pub const SignatureFile = struct {
         }
 
         const num_directories = try reader.readInt(usize, Endian);
-        try signature_file.directories.resize(num_directories);
+
+        signature_file.signature_file_data = .{ .InMemorySignatureFile = .{
+            .directories = try std.ArrayList(Directory).initCapacity(signature_file.allocator, num_directories),
+            .files = undefined,
+        } };
+
+        var signature_data = &signature_file.signature_file_data.?.InMemorySignatureFile;
 
         var total_allocated_len: usize = 0;
-        for (signature_file.directories.items) |*directory| {
+        for (signature_data.directories.items) |*directory| {
             const path_length = try reader.readInt(usize, Endian);
 
             total_allocated_len += path_length;
@@ -384,14 +367,13 @@ pub const SignatureFile = struct {
 
             try reader.readNoEof(path_buffer[0..path_length]);
             directory.path = path_buffer;
-
-            directory.permissions = try reader.readInt(u8, Endian);
         }
 
         const num_files = try reader.readInt(usize, Endian);
-        try signature_file.files.resize(num_files);
 
-        for (signature_file.files.items) |*file| {
+        signature_data.files = try std.ArrayList(File).initCapacity(signature_file.allocator, num_files);
+
+        for (signature_data.files.items) |*file| {
             const path_length = try reader.readInt(usize, Endian);
 
             total_allocated_len += path_length;
@@ -401,7 +383,6 @@ pub const SignatureFile = struct {
             try reader.readNoEof(path_buffer[0..path_length]);
             file.name = path_buffer;
             file.size = try reader.readInt(usize, Endian);
-            file.permissions = try reader.readInt(u8, Endian);
         }
 
         std.log.info("len={}", .{total_allocated_len});
@@ -432,12 +413,10 @@ test "signature file should be same after serialization/deserialization" {
     try signature_file.files.append(.{
         .name = file_name_a,
         .size = BlockSize * 2,
-        .permissions = 45,
     });
     try signature_file.files.append(.{
         .name = file_name_b,
         .size = BlockSize * 4,
-        .permissions = 20,
     });
 
     var dir_name_a = try std.testing.allocator.alloc(u8, "directory_a".len);
@@ -448,11 +427,9 @@ test "signature file should be same after serialization/deserialization" {
 
     try signature_file.directories.append(.{
         .path = dir_name_a,
-        .permissions = 64,
     });
     try signature_file.directories.append(.{
         .path = dir_name_b,
-        .permissions = 5,
     });
 
     var hashes: [6]BlockHash = undefined;
@@ -513,12 +490,10 @@ test "signature file should be same after serialization/deserialization" {
     try std.testing.expectEqual(signature_file.blocks.items.len, deserialized_signature_file.blocks.items.len);
 
     for (signature_file.directories.items, 0..) |directory, idx| {
-        try std.testing.expectEqual(directory.permissions, deserialized_signature_file.directories.items[idx].permissions);
         try std.testing.expectEqualSlices(u8, directory.path, deserialized_signature_file.directories.items[idx].path);
     }
 
     for (signature_file.files.items, 0..) |file, idx| {
-        try std.testing.expectEqual(file.permissions, deserialized_signature_file.files.items[idx].permissions);
         try std.testing.expectEqualSlices(u8, file.name, deserialized_signature_file.files.items[idx].name);
     }
 
