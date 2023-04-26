@@ -328,190 +328,208 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
     }
 }
 
-pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOperationsOptions, patch_stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
-    var num_patch_files: usize = numPatchFilesNeeded(new_signature, options.create_patch_options.max_work_unit_size);
+const PerFileOperationData = struct {
+    last_partial_block_backing_buffer: [BlockSize]u8,
+    last_partial_block: ?[]u8,
+    patch_operations: std.ArrayList(BlockPatching.PatchOperation),
+};
 
+pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOperationsOptions, patch_stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
     var anchored_block_map = try AnchoredBlocksMap.init(old_signature.*, allocator);
     defer anchored_block_map.deinit();
 
-    const GeneratePatchTask = struct {
-        const Self = @This();
+    _ = options;
+    _ = patch_stats;
+    _ = progress_callback;
+    _ = thread_pool;
+    _ = new_signature;
 
-        task: ThreadPool.Task,
-        file_info: PatchFileInfo,
-        new_signature_file: *SignatureFile,
-        old_signature_file: *SignatureFile,
-        are_patches_done: *std.atomic.Atomic(u32),
-        remaining_patches: *std.atomic.Atomic(usize),
-        io: *PatchFileIO,
-        block_map: *AnchoredBlocksMap,
-
-        per_thread_buffers: [][]u8,
-
-        per_thread_stats: ?[]PerThreadStats,
-
-        pub const PerThreadStats = struct {
-            changed_blocks: usize,
-            total_blocks: usize,
-            new_bytes: usize,
-        };
-
-        fn generatePatch(task: *ThreadPool.Task) void {
-            var generate_patch_task_data = @fieldParentPtr(Self, "task", task);
-            generatePatchImpl(generate_patch_task_data) catch |e| {
-                std.log.err("Error occured while trying to generate path error={s}\n", .{@errorName(e)});
-                unreachable;
-            };
-        }
-
-        fn generatePatchImpl(self: *Self) !void {
-            var buffer = self.per_thread_buffers[ThreadPool.Thread.current.?.idx];
-            var read_len = try self.io.read_patch_file(self.io, self.file_info, buffer);
-
-            if (read_len == 0) {
-                return error.ReadingPatchFileFailed;
-            }
-
-            var patch_operations_buffer: [8000]u8 = undefined;
-            var patch_operation_fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(&patch_operations_buffer);
-            var alloc = patch_operation_fixed_buffer_allocator.allocator();
-
-            var generated_operations = try BlockPatching.generateOperationsForBuffer(buffer[0..read_len], self.block_map.*, MaxDataOperationLength, alloc);
-
-            if (self.per_thread_stats) |per_thread_stats_unwrapped| {
-                var thread_stats_data = &per_thread_stats_unwrapped[ThreadPool.Thread.current.?.idx];
-                var changed_blocks = &thread_stats_data.changed_blocks;
-                var total_blocks = &thread_stats_data.total_blocks;
-                var new_bytes = &thread_stats_data.new_bytes;
-
-                for (generated_operations.items) |operation| {
-                    switch (operation) {
-                        .Data => |data| {
-                            var blocks_in_data_op = @ceil(@intToFloat(f64, data.len) / @intToFloat(f64, BlockSize));
-                            // std.log.info("Data found in {} and part {}, blocks: {}", .{ self.file_info.file_idx, self.file_info.file_part_idx, blocks_in_data_op });
-                            changed_blocks.* += @floatToInt(usize, blocks_in_data_op);
-                            total_blocks.* += @floatToInt(usize, blocks_in_data_op);
-                            new_bytes.* += data.len;
-                        },
-                        .BlockRange => {
-                            total_blocks.* += operation.BlockRange.block_span;
-                        },
-                        else => {
-                            return error.UnexpectedOperation;
-                        },
-                    }
-                }
-            }
-
-            try self.io.write_patch_file(self.io, .{
-                .operations = generated_operations,
-                .file_info = self.file_info,
-            });
-
-            if (self.remaining_patches.fetchSub(1, .Release) == 1) {
-                self.are_patches_done.store(1, .Release);
-                std.Thread.Futex.wake(self.are_patches_done, 1);
-            }
-        }
-    };
-
-    var tasks = try allocator.alloc(GeneratePatchTask, num_patch_files);
-    defer allocator.free(tasks);
-
-    var patches_remaining = std.atomic.Atomic(usize).init(num_patch_files);
-    var are_patches_done = std.atomic.Atomic(u32).init(0);
-
-    var per_thread_buffers = try allocator.alloc([]u8, thread_pool.num_threads);
-    defer allocator.free(per_thread_buffers);
-
-    for (per_thread_buffers) |*thread_buffer| {
-        thread_buffer.* = try allocator.alloc(u8, options.create_patch_options.max_work_unit_size);
-    }
-
-    defer {
-        for (per_thread_buffers) |thread_buffer| {
-            allocator.free(thread_buffer);
-        }
-    }
-
-    var per_thread_stats: ?[]GeneratePatchTask.PerThreadStats = null;
-
-    if (patch_stats != null) {
-        per_thread_stats = try allocator.alloc(GeneratePatchTask.PerThreadStats, thread_pool.num_threads);
-
-        for (per_thread_stats.?) |*stat| {
-            stat.* = .{
-                .changed_blocks = 0,
-                .total_blocks = 0,
-                .new_bytes = 0,
-            };
-        }
-    }
-
-    defer {
-        if (per_thread_stats) |stats| {
-            allocator.free(stats);
-        }
-    }
-
-    var batch = ThreadPool.Batch{};
-
-    var part_idx: usize = 0;
-    var file_idx: usize = 0;
-    var patch_file_idx: usize = 0;
-    while (patch_file_idx < num_patch_files) : (patch_file_idx += 1) {
-        if (part_idx * options.create_patch_options.max_work_unit_size > new_signature.files.items[file_idx].size) {
-            part_idx = 0;
-            file_idx += 1;
-
-            while (new_signature.files.items[file_idx].size == 0) {
-                file_idx += 1;
-            }
-        }
-
-        tasks[patch_file_idx] = .{
-            .task = ThreadPool.Task{ .callback = GeneratePatchTask.generatePatch },
-            .file_info = .{
-                .file_idx = file_idx,
-                .file_part_idx = part_idx,
-            },
-            .new_signature_file = new_signature,
-            .old_signature_file = old_signature,
-            .remaining_patches = &patches_remaining,
-            .are_patches_done = &are_patches_done,
-            .io = options.patch_file_io,
-            .per_thread_buffers = per_thread_buffers,
-            .block_map = anchored_block_map,
-            .per_thread_stats = per_thread_stats,
-        };
-
-        batch.push(ThreadPool.Batch.from(&tasks[patch_file_idx].task));
-
-        part_idx += 1;
-    }
-
-    thread_pool.schedule(batch);
-
-    var current_num_patches_remaining = patches_remaining.load(.Acquire);
-    while (current_num_patches_remaining != 0 and are_patches_done.load(.Acquire) == 0) {
-        if (progress_callback) |progress_callback_unwrapped| {
-            var elapsed_progress = (1.0 - @intToFloat(f32, current_num_patches_remaining) / @intToFloat(f32, num_patch_files)) * 100;
-            progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Generating Patches");
-        }
-
-        std.time.sleep(std.time.ns_per_ms * 100);
-        current_num_patches_remaining = patches_remaining.load(.Acquire);
-    }
-
-    if (per_thread_stats) |per_thread_stats_unwrapped| {
-        var stats = patch_stats.?;
-        for (per_thread_stats_unwrapped) |thread_stats| {
-            stats.changed_blocks += thread_stats.changed_blocks;
-            stats.total_blocks += thread_stats.total_blocks;
-            stats.num_new_bytes += thread_stats.new_bytes;
-        }
-    }
 }
+
+// pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOperationsOptions, patch_stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
+//     var num_patch_files: usize = numPatchFilesNeeded(new_signature, options.create_patch_options.max_work_unit_size);
+
+//     var anchored_block_map = try AnchoredBlocksMap.init(old_signature.*, allocator);
+//     defer anchored_block_map.deinit();
+
+//     const GeneratePatchTask = struct {
+//         const Self = @This();
+
+//         task: ThreadPool.Task,
+//         file_info: PatchFileInfo,
+//         new_signature_file: *SignatureFile,
+//         old_signature_file: *SignatureFile,
+//         are_patches_done: *std.atomic.Atomic(u32),
+//         remaining_patches: *std.atomic.Atomic(usize),
+//         io: *PatchFileIO,
+//         block_map: *AnchoredBlocksMap,
+
+//         per_thread_buffers: [][]u8,
+
+//         per_thread_stats: ?[]PerThreadStats,
+
+//         pub const PerThreadStats = struct {
+//             changed_blocks: usize,
+//             total_blocks: usize,
+//             new_bytes: usize,
+//         };
+
+//         fn generatePatch(task: *ThreadPool.Task) void {
+//             var generate_patch_task_data = @fieldParentPtr(Self, "task", task);
+//             generatePatchImpl(generate_patch_task_data) catch |e| {
+//                 std.log.err("Error occured while trying to generate path error={s}\n", .{@errorName(e)});
+//                 unreachable;
+//             };
+//         }
+
+//         fn generatePatchImpl(self: *Self) !void {
+//             var buffer = self.per_thread_buffers[ThreadPool.Thread.current.?.idx];
+//             var read_len = try self.io.read_patch_file(self.io, self.file_info, buffer);
+
+//             if (read_len == 0) {
+//                 return error.ReadingPatchFileFailed;
+//             }
+
+//             var patch_operations_buffer: [8000]u8 = undefined;
+//             var patch_operation_fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(&patch_operations_buffer);
+//             var alloc = patch_operation_fixed_buffer_allocator.allocator();
+
+//             var generated_operations = try BlockPatching.generateOperationsForBuffer(buffer[0..read_len], self.block_map.*, MaxDataOperationLength, alloc);
+
+//             if (self.per_thread_stats) |per_thread_stats_unwrapped| {
+//                 var thread_stats_data = &per_thread_stats_unwrapped[ThreadPool.Thread.current.?.idx];
+//                 var changed_blocks = &thread_stats_data.changed_blocks;
+//                 var total_blocks = &thread_stats_data.total_blocks;
+//                 var new_bytes = &thread_stats_data.new_bytes;
+
+//                 for (generated_operations.items) |operation| {
+//                     switch (operation) {
+//                         .Data => |data| {
+//                             var blocks_in_data_op = @ceil(@intToFloat(f64, data.len) / @intToFloat(f64, BlockSize));
+//                             // std.log.info("Data found in {} and part {}, blocks: {}", .{ self.file_info.file_idx, self.file_info.file_part_idx, blocks_in_data_op });
+//                             changed_blocks.* += @floatToInt(usize, blocks_in_data_op);
+//                             total_blocks.* += @floatToInt(usize, blocks_in_data_op);
+//                             new_bytes.* += data.len;
+//                         },
+//                         .BlockRange => {
+//                             total_blocks.* += operation.BlockRange.block_span;
+//                         },
+//                         else => {
+//                             return error.UnexpectedOperation;
+//                         },
+//                     }
+//                 }
+//             }
+
+//             try self.io.write_patch_file(self.io, .{
+//                 .operations = generated_operations,
+//                 .file_info = self.file_info,
+//             });
+
+//             if (self.remaining_patches.fetchSub(1, .Release) == 1) {
+//                 self.are_patches_done.store(1, .Release);
+//                 std.Thread.Futex.wake(self.are_patches_done, 1);
+//             }
+//         }
+//     };
+
+//     var tasks = try allocator.alloc(GeneratePatchTask, num_patch_files);
+//     defer allocator.free(tasks);
+
+//     var patches_remaining = std.atomic.Atomic(usize).init(num_patch_files);
+//     var are_patches_done = std.atomic.Atomic(u32).init(0);
+
+//     var per_thread_buffers = try allocator.alloc([]u8, thread_pool.num_threads);
+//     defer allocator.free(per_thread_buffers);
+
+//     for (per_thread_buffers) |*thread_buffer| {
+//         thread_buffer.* = try allocator.alloc(u8, options.create_patch_options.max_work_unit_size);
+//     }
+
+//     defer {
+//         for (per_thread_buffers) |thread_buffer| {
+//             allocator.free(thread_buffer);
+//         }
+//     }
+
+//     var per_thread_stats: ?[]GeneratePatchTask.PerThreadStats = null;
+
+//     if (patch_stats != null) {
+//         per_thread_stats = try allocator.alloc(GeneratePatchTask.PerThreadStats, thread_pool.num_threads);
+
+//         for (per_thread_stats.?) |*stat| {
+//             stat.* = .{
+//                 .changed_blocks = 0,
+//                 .total_blocks = 0,
+//                 .new_bytes = 0,
+//             };
+//         }
+//     }
+
+//     defer {
+//         if (per_thread_stats) |stats| {
+//             allocator.free(stats);
+//         }
+//     }
+
+//     var batch = ThreadPool.Batch{};
+
+//     var part_idx: usize = 0;
+//     var file_idx: usize = 0;
+//     var patch_file_idx: usize = 0;
+//     while (patch_file_idx < num_patch_files) : (patch_file_idx += 1) {
+//         if (part_idx * options.create_patch_options.max_work_unit_size > new_signature.files.items[file_idx].size) {
+//             part_idx = 0;
+//             file_idx += 1;
+
+//             while (new_signature.files.items[file_idx].size == 0) {
+//                 file_idx += 1;
+//             }
+//         }
+
+//         tasks[patch_file_idx] = .{
+//             .task = ThreadPool.Task{ .callback = GeneratePatchTask.generatePatch },
+//             .file_info = .{
+//                 .file_idx = file_idx,
+//                 .file_part_idx = part_idx,
+//             },
+//             .new_signature_file = new_signature,
+//             .old_signature_file = old_signature,
+//             .remaining_patches = &patches_remaining,
+//             .are_patches_done = &are_patches_done,
+//             .io = options.patch_file_io,
+//             .per_thread_buffers = per_thread_buffers,
+//             .block_map = anchored_block_map,
+//             .per_thread_stats = per_thread_stats,
+//         };
+
+//         batch.push(ThreadPool.Batch.from(&tasks[patch_file_idx].task));
+
+//         part_idx += 1;
+//     }
+
+//     thread_pool.schedule(batch);
+
+//     var current_num_patches_remaining = patches_remaining.load(.Acquire);
+//     while (current_num_patches_remaining != 0 and are_patches_done.load(.Acquire) == 0) {
+//         if (progress_callback) |progress_callback_unwrapped| {
+//             var elapsed_progress = (1.0 - @intToFloat(f32, current_num_patches_remaining) / @intToFloat(f32, num_patch_files)) * 100;
+//             progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Generating Patches");
+//         }
+
+//         std.time.sleep(std.time.ns_per_ms * 100);
+//         current_num_patches_remaining = patches_remaining.load(.Acquire);
+//     }
+
+//     if (per_thread_stats) |per_thread_stats_unwrapped| {
+//         var stats = patch_stats.?;
+//         for (per_thread_stats_unwrapped) |thread_stats| {
+//             stats.changed_blocks += thread_stats.changed_blocks;
+//             stats.total_blocks += thread_stats.total_blocks;
+//             stats.num_new_bytes += thread_stats.new_bytes;
+//         }
+//     }
+// }
 
 test "two files with no previous signature should result in two data operation patches" {
     var old_signature = try SignatureFile.init(std.testing.allocator);
