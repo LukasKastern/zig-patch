@@ -56,7 +56,7 @@ pub const Implementation = struct {
     unlock_directory: *const fn (ImplSelf, locked_directory: LockedDirectory) void,
     destroy: *const fn (ImplSelf) void,
     read_file: *const fn (ImplSelf, FileInfo, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
-    tick: *const fn (ImplSelf, usize) void,
+    tick: *const fn (ImplSelf) void,
 };
 
 const Self = @This();
@@ -86,8 +86,8 @@ pub fn readFile(self: *Self, file_info: FileInfo, offset: usize, buffer: []u8, c
     return self.impl.read_file(self.impl, file_info, offset, buffer, callback, callback_context);
 }
 
-pub fn tick(self: *Self, sleep_for_ms: usize) void {
-    return self.impl.tick(self.impl, sleep_for_ms);
+pub fn tick(self: *Self) void {
+    return self.impl.tick(self.impl);
 }
 
 test "Locking directory should return correct files" {

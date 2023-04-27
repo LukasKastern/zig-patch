@@ -215,7 +215,7 @@ pub const SignatureFile = struct {
             }
 
             // Tick PatchIO to populate any newly populated buffers
-            patch_io.tick(10);
+            patch_io.tick();
 
             // We have buffers to read into available.
             while (next_batch_idx < num_batches_of_work and available_task_slots.items.len > 0) {

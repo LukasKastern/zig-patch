@@ -297,7 +297,7 @@ fn readFile(implementation: PatchIO.Implementation, file_info: PatchIO.FileInfo,
 
     // If there are no slots left we keep ticking until one becomes available.
     while (self.available_operation_slots.items.len == 0) {
-        implementation.tick(implementation, 10);
+        implementation.tick(implementation);
     }
 
     var slot_idx = self.available_operation_slots.orderedRemove(self.available_operation_slots.items.len - 1);
@@ -376,10 +376,8 @@ fn readFile(implementation: PatchIO.Implementation, file_info: PatchIO.FileInfo,
     }
 }
 
-fn tick(implementation: PatchIO.Implementation, sleep_for_ms: usize) void {
+fn tick(implementation: PatchIO.Implementation) void {
     var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
-
-    var remaining_sleep_time: u32 = @intCast(u32, sleep_for_ms);
 
     wait_on_operations: while (true) {
         var events = self.pending_operations.items(.event_handle);
@@ -388,15 +386,13 @@ fn tick(implementation: PatchIO.Implementation, sleep_for_ms: usize) void {
             break :wait_on_operations;
         }
 
-        var result = windows.WaitForMultipleObjectsEx(events, false, remaining_sleep_time, true) catch |e| {
+        var result = windows.WaitForMultipleObjectsEx(events, false, 0, true) catch |e| {
             switch (e) {
                 else => {
                     break :wait_on_operations;
                 },
             }
         };
-
-        remaining_sleep_time = 0;
 
         var pending_operation_data = self.pending_operations.get(result);
         var operation = &self.operation_slots[pending_operation_data.operation_idx];
