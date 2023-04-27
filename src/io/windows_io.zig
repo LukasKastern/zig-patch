@@ -376,8 +376,6 @@ fn readFile(implementation: PatchIO.Implementation, file_info: PatchIO.FileInfo,
 fn tick(implementation: PatchIO.Implementation) void {
     var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
 
-    _ = sleep_for_ms;
-
     var entries: [64]windows.OVERLAPPED_ENTRY = undefined;
     var num_entries_removed: u32 = 0;
     _ = windows.kernel32.GetQueuedCompletionStatusEx(self.completion_port, &entries, entries.len, &num_entries_removed, 0, windows.TRUE);
