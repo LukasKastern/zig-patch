@@ -54,7 +54,6 @@ const Operation = union(enum) {
         offset: i64,
         buffer: []u8,
         io_status_block: windows.IO_STATUS_BLOCK,
-        overlapped: windows.OVERLAPPED,
     },
 };
 
@@ -62,10 +61,11 @@ const ActiveOperation = struct {
     operation: Operation,
     callback: *const fn (*anyopaque) void,
     callback_context: *anyopaque,
+    overlapped: windows.OVERLAPPED,
+    slot_idx: usize,
 };
 
 const OperationSlot = struct {
-    operation_event: windows.HANDLE,
     pending_operation: ?ActiveOperation,
 };
 
@@ -82,7 +82,6 @@ allocator: std.mem.Allocator,
 
 operation_slots: [MaxSimulatenousOperations]OperationSlot,
 available_operation_slots: std.ArrayList(usize),
-pending_operations: std.MultiArrayList(PendingOperation),
 completion_port: windows.HANDLE,
 
 pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []const u8, allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.LockedDirectory {
@@ -191,33 +190,44 @@ pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []
                             var prev_offset = path_buffer_offset;
                             path_buffer_offset += @intCast(u32, end_idx);
 
+                            var is_directory = file_info.FileAttributes & windows.FILE_ATTRIBUTE_DIRECTORY != 0;
+                            var nt_name = windows.UNICODE_STRING{
+                                .Length = @intCast(c_ushort, file_info.FileNameLength),
+                                .MaximumLength = @intCast(c_ushort, file_info.FileNameLength),
+                                .Buffer = file_name.ptr,
+                            };
+                            var attr = windows.OBJECT_ATTRIBUTES{
+                                .Length = @sizeOf(windows.OBJECT_ATTRIBUTES),
+                                .RootDirectory = directory.handle,
+                                .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
+                                .ObjectName = &nt_name,
+                                .SecurityDescriptor = null,
+                                .SecurityQualityOfService = null,
+                            };
+
                             var file_handle: windows.HANDLE = undefined;
 
-                            // var file_io: windows.IO_STATUS_BLOCK = undefined;
+                            var file_io: windows.IO_STATUS_BLOCK = undefined;
+                            const rc = ntdll.NtCreateFile(
+                                &file_handle,
+                                windows.FILE_READ_DATA | windows.FILE_WRITE_DATA, //DesiredAccess
+                                &attr,
+                                &file_io,
+                                null, //AllocationSize
+                                0, // FileAttributes
+                                windows.FILE_SHARE_READ, // ShareAccess
+                                windows.FILE_OPEN, // CreateDisposition
+                                0, // CreateOptions
+                                null, //EaBuffer
+                                0, //EaLength
+                            );
 
-                            var temp_create_file_buffer: [512]u8 = undefined;
-                            var bytes_to_copy = "D:/Projects/Journee/seat/JourneeBUild3/Windows/";
-                            std.mem.copy(u8, &temp_create_file_buffer, bytes_to_copy);
-
-                            var path_bufff = path_buffer[prev_offset .. prev_offset + end_idx];
-
-                            std.mem.copy(u8, temp_create_file_buffer[bytes_to_copy.len..], path_bufff);
-                            temp_create_file_buffer[bytes_to_copy.len + end_idx] = 0;
-
-                            // file_handle = kernel32_extra.CreateFileA(@ptrCast([*:0]u8, &temp_create_file_buffer), windows.GENERIC_READ, windows.FILE_SHARE_READ, null, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, null);
-
-                            var is_directory = file_info.FileAttributes & windows.FILE_ATTRIBUTE_DIRECTORY != 0;
-                            var attributes: u32 = if (is_directory) windows.FILE_FLAG_BACKUP_SEMANTICS else windows.FILE_ATTRIBUTE_NORMAL;
-                            file_handle = kernel32_extra.CreateFileA(@ptrCast([*:0]u8, &temp_create_file_buffer), windows.GENERIC_READ, windows.FILE_SHARE_READ, null, windows.OPEN_EXISTING, attributes | windows.FILE_FLAG_OVERLAPPED, null);
-                            // std.log.yerr("Error={}", .{windows.kernel32.GetLastError()});
-
-                            if (file_handle == windows.INVALID_HANDLE_VALUE) {
-                                return error.Unexpected;
+                            if (rc != .SUCCESS) {
+                                return windows.unexpectedStatus(rc);
                             }
 
-                            _ = self;
-                            if (file_info.FileAttributes & windows.FILE_ATTRIBUTE_DIRECTORY == 0) {
-                                // _ = windows.CreateIoCompletionPort(file_handle, self.completion_port, undefined, undefined) catch undefined;
+                            if (!is_directory) {
+                                _ = windows.CreateIoCompletionPort(file_handle, self.completion_port, undefined, undefined) catch undefined;
                             }
 
                             if (is_directory) {
@@ -279,17 +289,8 @@ fn destroy(implementation: PatchIO.Implementation) void {
     var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
 
     self.available_operation_slots.deinit();
-    for (0..MaxSimulatenousOperations) |idx| {
-        windows.CloseHandle(self.operation_slots[idx].operation_event);
-    }
 
-    self.pending_operations.deinit(self.allocator);
     self.allocator.destroy(self);
-}
-
-fn addPendingOperation(self: *Self, operation_idx: usize) void {
-    var operation = &self.operation_slots[operation_idx];
-    self.pending_operations.appendAssumeCapacity(.{ .operation_idx = operation_idx, .event_handle = operation.operation_event });
 }
 
 fn readFile(implementation: PatchIO.Implementation, file_info: PatchIO.FileInfo, offset: usize, buffer: []u8, callback: *const fn (*anyopaque) void, callback_ctx: *anyopaque) PatchIO.PatchIOErrors!void {
@@ -311,24 +312,25 @@ fn readFile(implementation: PatchIO.Implementation, file_info: PatchIO.FileInfo,
             .offset = @intCast(i64, offset),
             .buffer = buffer,
             .io_status_block = undefined,
-            .overlapped = windows.OVERLAPPED{
-                .Internal = 0,
-                .InternalHigh = 0,
-                .DUMMYUNIONNAME = .{
-                    .DUMMYSTRUCTNAME = .{
-                        .Offset = @truncate(u32, offset),
-                        .OffsetHigh = @truncate(u32, offset >> 32),
-                    },
-                },
-                .hEvent = null,
-            },
         } },
         .callback = callback,
         .callback_context = callback_ctx,
+        .overlapped = windows.OVERLAPPED{
+            .Internal = 0,
+            .InternalHigh = 0,
+            .DUMMYUNIONNAME = .{
+                .DUMMYSTRUCTNAME = .{
+                    .Offset = @truncate(u32, offset),
+                    .OffsetHigh = @truncate(u32, offset >> 32),
+                },
+            },
+            .hEvent = null,
+        },
+        .slot_idx = slot_idx,
     };
 
     var read_file_op = &operation.pending_operation.?.operation.ReadFile;
-    read_file_op.overlapped.hEvent = operation.operation_event;
+    operation.pending_operation.?.overlapped.hEvent = null;
 
     // var nt_result = ntdll_extra.NtReadFile(file_info.handle, null, null, null, &read_file_op.io_status_block, read_file_op.buffer.ptr, @intCast(u32, read_file_op.buffer.len), &read_file_op.offset, null);
 
@@ -353,22 +355,17 @@ fn readFile(implementation: PatchIO.Implementation, file_info: PatchIO.FileInfo,
         len_to_read += (512 - len_to_read % 512);
     }
 
-    _ = windows.kernel32.ReadFile(file_info.handle, read_file_op.buffer.ptr, len_to_read, null, &read_file_op.overlapped);
+    _ = windows.kernel32.ReadFile(file_info.handle, read_file_op.buffer.ptr, len_to_read, null, &operation.pending_operation.?.overlapped);
 
     var last_err = windows.kernel32.GetLastError();
     switch (last_err) {
         .SUCCESS => {
-            // addPendingOperation(self, slot_idx);
-
             operation.pending_operation.?.callback(operation.pending_operation.?.callback_context);
             operation.pending_operation = null;
             self.available_operation_slots.appendAssumeCapacity(slot_idx);
         },
-        .IO_PENDING => {
-            addPendingOperation(self, slot_idx);
-        },
+        .IO_PENDING => {},
         else => {
-            std.log.err("ReadFileErr={}", .{last_err});
             operation.pending_operation = null;
             self.available_operation_slots.appendAssumeCapacity(slot_idx);
             return error.Unexpected;
@@ -379,29 +376,22 @@ fn readFile(implementation: PatchIO.Implementation, file_info: PatchIO.FileInfo,
 fn tick(implementation: PatchIO.Implementation) void {
     var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
 
-    wait_on_operations: while (true) {
-        var events = self.pending_operations.items(.event_handle);
+    _ = sleep_for_ms;
 
-        if (events.len == 0) {
-            break :wait_on_operations;
-        }
+    var entries: [64]windows.OVERLAPPED_ENTRY = undefined;
+    var num_entries_removed: u32 = 0;
+    _ = windows.kernel32.GetQueuedCompletionStatusEx(self.completion_port, &entries, entries.len, &num_entries_removed, 0, windows.TRUE);
 
-        var result = windows.WaitForMultipleObjectsEx(events, false, 0, true) catch |e| {
-            switch (e) {
-                else => {
-                    break :wait_on_operations;
-                },
-            }
-        };
+    for (entries[0..num_entries_removed]) |entry| {
+        var parent_ptr = @fieldParentPtr(ActiveOperation, "overlapped", entry.lpOverlapped);
+        var slot_idx = parent_ptr.slot_idx;
 
-        var pending_operation_data = self.pending_operations.get(result);
-        var operation = &self.operation_slots[pending_operation_data.operation_idx];
+        var operation = &self.operation_slots[slot_idx];
 
         operation.pending_operation.?.callback(operation.pending_operation.?.callback_context);
 
         operation.pending_operation = null;
-        self.available_operation_slots.appendAssumeCapacity(pending_operation_data.operation_idx);
-        self.pending_operations.swapRemove(result);
+        self.available_operation_slots.appendAssumeCapacity(slot_idx);
     }
 }
 
@@ -413,18 +403,14 @@ pub fn create(allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.Implem
         .allocator = allocator, 
         .operation_slots = undefined,
         .available_operation_slots = std.ArrayList(usize).initCapacity(allocator, MaxSimulatenousOperations) catch return error.Unexpected,
-        .pending_operations = std.MultiArrayList(PendingOperation){}, 
-        .completion_port = try windows.CreateIoCompletionPort(windows.INVALID_HANDLE_VALUE, null, 0, 1)
+        .completion_port = try windows.CreateIoCompletionPort(windows.INVALID_HANDLE_VALUE, null, 0, 16)
     };
     // zig fmt: on
-
-    try self.pending_operations.ensureTotalCapacity(allocator, MaxSimulatenousOperations);
 
     for (0..MaxSimulatenousOperations) |idx| {
         self.available_operation_slots.appendAssumeCapacity(idx);
         self.operation_slots[idx] = .{
             .pending_operation = null,
-            .operation_event = windows.CreateEventEx(null, &[0]u8{}, 0, windows.EVENT_ALL_ACCESS) catch return error.Unexpected,
         };
     }
 
