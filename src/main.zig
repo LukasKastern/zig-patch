@@ -355,7 +355,7 @@ pub fn main() !void {
 
     const command = std.meta.stringToEnum(CommandLineCommand, command_name) orelse show_main_help();
 
-    var thread_pool = ThreadPool.init(.{ .max_threads = 6 });
+    var thread_pool = ThreadPool.init(.{ .max_threads = 8 });
     thread_pool.spawnThreads();
 
     switch (command) {

@@ -271,7 +271,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
         defer patch_io.deinit();
 
         var generate_signature_start_sample = timer.read();
-        try new_signature_file.generateFromFolder(source_folder_path, thread_pool, config.progress_callback, patch_io);
+        try new_signature_file.generateFromFolder(source_folder_path, thread_pool, config.progress_callback, &patch_io);
         var generate_signature_finish_sample = timer.read();
 
         std.log.info("Generated Signature in {d:2}ms", .{(@intToFloat(f64, generate_signature_finish_sample) - @intToFloat(f64, generate_signature_start_sample)) / 1000000});
@@ -329,7 +329,7 @@ pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []con
     var patch_io = try PatchIO.init(config.allocator);
     defer patch_io.deinit();
 
-    try signature_file.generateFromFolder(folder_to_make_signature_of, config.thread_pool, config.progress_callback, patch_io);
+    try signature_file.generateFromFolder(folder_to_make_signature_of, config.thread_pool, config.progress_callback, &patch_io);
 
     const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
     var buffered_file_writer: BufferedFileWriter = .{

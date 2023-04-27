@@ -89,18 +89,25 @@ pub const SignatureFile = struct {
 
         // We schedule our work in Batches that attempt to process this amount of blocks at once.
         // This tries to strike a balance between repeated open/write/reads of files and the cost of hashing the content.
-        const BlocksPerBatchOfWork = 4;
+        const BlocksPerBatchOfWork = 128;
+
+        buffer: [BlockSize * CalculateHashData.BlocksPerBatchOfWork]u8,
+
+        is_done: std.atomic.Atomic(u32),
+
+        tasks_to_schedule: *ThreadPool.Batch,
+
+        batch_in_file: usize,
+        file_idx: usize,
+
+        read_bytes: usize,
 
         task: ThreadPool.Task,
-        blocks: *std.atomic.Atomic(usize),
-        are_batches_done: *std.atomic.Atomic(u32),
-        file_idx: u32,
-        batch_in_file: usize,
-        signature_file: *SignatureFile,
-        dir: std.fs.Dir,
 
         out_hashes: [CalculateHashData.BlocksPerBatchOfWork]BlockHash,
         num_processed_blocks: usize,
+
+        thread_pool: *ThreadPool,
 
         const Self = @This();
 
@@ -110,28 +117,14 @@ pub const SignatureFile = struct {
         }
 
         fn calculate_hash_impl(self: *Self) !void {
-            var on_disk_signature = self.signature_file.signature_file_data.?.OnDiskSignatureFile;
-
-            const signature_file = on_disk_signature.locked_directory.files.items[self.file_idx];
-
-            const start_block_idx = self.batch_in_file * CalculateHashData.BlocksPerBatchOfWork;
-            const read_offset = start_block_idx * BlockSize;
-
-            var file = try self.dir.openFile(signature_file.resolvePath(on_disk_signature.locked_directory), .{});
-            defer file.close();
-
-            var buffer: [BlockSize * CalculateHashData.BlocksPerBatchOfWork]u8 = undefined;
-            try file.seekTo(read_offset);
-            var read_bytes = try file.read(&buffer);
-
-            std.debug.assert(read_bytes > 0);
+            std.debug.assert(self.read_bytes > 0);
 
             var processed_blocks: u32 = 0;
             while (processed_blocks < CalculateHashData.BlocksPerBatchOfWork) : (processed_blocks += 1) {
                 const block_start_idx_in_buffer = processed_blocks * BlockSize;
-                var remaining_bytes = read_bytes - block_start_idx_in_buffer;
+                var remaining_bytes = self.read_bytes - block_start_idx_in_buffer;
 
-                var block_data = buffer[block_start_idx_in_buffer .. block_start_idx_in_buffer + std.math.min(BlockSize, remaining_bytes)];
+                var block_data = self.buffer[block_start_idx_in_buffer .. block_start_idx_in_buffer + std.math.min(BlockSize, remaining_bytes)];
 
                 var rolling_hash: RollingHash = .{};
                 rolling_hash.recompute(block_data);
@@ -148,14 +141,15 @@ pub const SignatureFile = struct {
 
             self.num_processed_blocks = processed_blocks + 1;
 
-            if (self.blocks.fetchSub(1, .Release) == 1) {
-                self.are_batches_done.store(1, .Release);
-                std.Thread.Futex.wake(self.are_batches_done, 1);
-            }
+            self.is_done.store(1, .Release);
+
+            // if (self.blocks.fetchSub(1, .Release) == 1) {
+            //     self.are_batches_done.store(1, .Release);
+            // }
         }
     };
 
-    pub fn generateFromFolder(self: *SignatureFile, dir: []const u8, thread_pool: *ThreadPool, on_progress: ?ProgressCallback, patch_io: PatchIO) !void {
+    pub fn generateFromFolder(self: *SignatureFile, dir: []const u8, thread_pool: *ThreadPool, on_progress: ?ProgressCallback, patch_io: *PatchIO) !void {
         self.deallocateBuffers();
 
         var locked_folder = patch_io.lockDirectory(dir, self.allocator) catch {
@@ -164,7 +158,7 @@ pub const SignatureFile = struct {
 
         errdefer patch_io.unlockDirectory(locked_folder);
 
-        self.signature_file_data = .{ .OnDiskSignatureFile = .{ .locked_directory = locked_folder, .io = patch_io } };
+        self.signature_file_data = .{ .OnDiskSignatureFile = .{ .locked_directory = locked_folder, .io = patch_io.* } };
 
         var dir_handle = try std.fs.cwd().openDir(dir, .{});
         defer dir_handle.close();
@@ -187,71 +181,159 @@ pub const SignatureFile = struct {
             }
         }
 
-        var batches_remaining = std.atomic.Atomic(usize).init(num_batches_of_work);
-        var are_batches_done = std.atomic.Atomic(u32).init(0);
+        try self.blocks.ensureTotalCapacity(num_blocks);
+        const num_parallel_buffers = 16;
 
-        var tasks = try self.allocator.alloc(CalculateHashData, num_batches_of_work);
+        var tasks = try self.allocator.alloc(CalculateHashData, num_parallel_buffers);
         defer self.allocator.free(tasks);
 
-        var batch = ThreadPool.Batch{};
-        var file_idx: u32 = 0;
-
-        var batch_in_file: u32 = 0;
-        var batch_idx: u32 = 0;
-
-        while (batch_idx < num_batches_of_work) : (batch_idx += 1) {
-            if (@intCast(usize, batch_in_file) * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= locked_folder.files.items[file_idx].size) {
-                file_idx += 1;
-                batch_in_file = 0;
-            }
-
-            while (locked_folder.files.items[file_idx].size == 0) {
-                file_idx += 1;
-            }
-
-            var current_file = locked_folder.files.items[file_idx];
-
-            std.debug.assert(current_file.size > 0);
-
-            tasks[batch_idx] = CalculateHashData{
-                .task = ThreadPool.Task{ .callback = CalculateHashData.calculate_hash },
-                .blocks = &batches_remaining,
-                .are_batches_done = &are_batches_done,
-                .file_idx = file_idx,
-                .batch_in_file = batch_in_file,
-                .signature_file = self,
-                .num_processed_blocks = 0,
-                .dir = dir_handle,
-                .out_hashes = undefined,
-            };
-
-            batch.push(ThreadPool.Batch.from(&tasks[batch_idx].task));
-
-            batch_in_file += 1;
+        for (tasks) |*task| {
+            task.thread_pool = thread_pool;
+            task.task = ThreadPool.Task{ .callback = CalculateHashData.calculate_hash };
         }
 
-        thread_pool.schedule(batch);
+        var available_task_slots = try std.ArrayList(usize).initCapacity(self.allocator, num_parallel_buffers);
+        defer available_task_slots.deinit();
 
-        try self.blocks.ensureTotalCapacity(num_blocks);
+        for (0..num_parallel_buffers) |idx| {
+            available_task_slots.appendAssumeCapacity(idx);
+        }
 
-        var num_batches_remaining = batches_remaining.load(.Acquire);
-        while (num_batches_remaining > 0 and are_batches_done.load(.Acquire) == 0) {
+        var next_batch_idx: usize = 0;
+
+        var file_idx: u64 = 0;
+
+        var batch_in_file: u64 = 0;
+
+        var tasks_to_schedule: ThreadPool.Batch = .{};
+
+        while (self.blocks.items.len != num_blocks) {
             if (on_progress) |progress_callback_unwrapped| {
-                var elapsed_progress = (1.0 - @intToFloat(f32, num_batches_remaining) / @intToFloat(f32, num_batches_of_work)) * 100;
-                progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Hashing Blocks");
+                _ = progress_callback_unwrapped;
+                // var elapsed_progress = (@intToFloat(f32, self.blocks.items.len) / @intToFloat(f32, num_blocks)) * 100;
+                // progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Hashing Blocks");
             }
 
-            std.time.sleep(std.time.ns_per_ms * 100);
-            num_batches_remaining = batches_remaining.load(.Acquire);
-        }
+            // Tick PatchIO to populate any newly populated buffers
+            patch_io.tick(10);
 
-        for (tasks) |calculate_hash_data| {
-            const start_block_idx = calculate_hash_data.batch_in_file * CalculateHashData.BlocksPerBatchOfWork;
+            // We have buffers to read into available.
+            while (next_batch_idx < num_batches_of_work and available_task_slots.items.len > 0) {
+                var slot_idx = available_task_slots.orderedRemove(available_task_slots.items.len - 1);
+                var task = &tasks[slot_idx];
 
-            for (calculate_hash_data.out_hashes[0..calculate_hash_data.num_processed_blocks], 0..) |hash, idx| {
-                self.blocks.appendAssumeCapacity(.{ .file_idx = calculate_hash_data.file_idx, .block_idx = @intCast(u32, start_block_idx) + @intCast(u32, idx), .hash = hash });
+                if (@intCast(usize, batch_in_file) * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= locked_folder.files.items[file_idx].size) {
+                    file_idx += 1;
+                    batch_in_file = 0;
+                }
+
+                while (locked_folder.files.items[file_idx].size == 0) {
+                    file_idx += 1;
+                }
+
+                var current_file = locked_folder.files.items[file_idx];
+
+                const IOCallbackWrapper = struct {
+                    pub fn onReadComplete(ctx: *anyopaque) void {
+                        var calculate_hash_data = @ptrCast(*CalculateHashData, @alignCast(@alignOf(*CalculateHashData), ctx));
+
+                        var batch = ThreadPool.Batch.from(&calculate_hash_data.task);
+                        calculate_hash_data.tasks_to_schedule.push(batch);
+                    }
+                };
+
+                var remaining_len = current_file.size - @intCast(usize, batch_in_file) * BlockSize * CalculateHashData.BlocksPerBatchOfWork;
+                var len_to_read = std.math.min(remaining_len, BlockSize * CalculateHashData.BlocksPerBatchOfWork);
+                var read_offset = batch_in_file * BlockSize * CalculateHashData.BlocksPerBatchOfWork;
+
+                task.tasks_to_schedule = &tasks_to_schedule;
+                task.file_idx = file_idx;
+                task.is_done = std.atomic.Atomic(u32).init(0);
+                task.read_bytes = len_to_read;
+                task.batch_in_file = batch_in_file;
+
+                try patch_io.readFile(current_file, read_offset, task.buffer[0..len_to_read], IOCallbackWrapper.onReadComplete, task);
+                next_batch_idx += 1;
+                batch_in_file += 1;
+            }
+
+            if (tasks_to_schedule.len > 0) {
+                thread_pool.schedule(tasks_to_schedule);
+                tasks_to_schedule = .{};
+            }
+
+            for (tasks, 0..) |*task, idx| {
+                if (task.is_done.load(.Acquire) == 1) {
+                    const start_block_idx = task.batch_in_file * CalculateHashData.BlocksPerBatchOfWork;
+
+                    var expected_num_processed_blocks = @floatToInt(usize, @ceil(@intToFloat(f64, task.read_bytes) / BlockSize));
+                    std.debug.assert(expected_num_processed_blocks == task.num_processed_blocks);
+
+                    for (task.out_hashes[0..task.num_processed_blocks], 0..) |hash, block_idx| {
+                        self.blocks.appendAssumeCapacity(.{ .file_idx = @intCast(u32, task.file_idx), .block_idx = @intCast(u32, start_block_idx) + @intCast(u32, block_idx), .hash = hash });
+                    }
+
+                    available_task_slots.appendAssumeCapacity(idx);
+                    task.is_done.store(0, .Release);
+                }
             }
         }
+
+        std.debug.assert(self.blocks.items.len == num_blocks);
+
+        // while (batch_idx < num_batches_of_work) : (batch_idx += 1) {
+        //     if (@intCast(usize, batch_in_file) * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= locked_folder.files.items[file_idx].size) {
+        //         file_idx += 1;
+        //         batch_in_file = 0;
+        //     }
+
+        //     while (locked_folder.files.items[file_idx].size == 0) {
+        //         file_idx += 1;
+        //     }
+
+        //     var current_file = locked_folder.files.items[file_idx];
+
+        //     std.debug.assert(current_file.size > 0);
+
+        //     tasks[batch_idx] = CalculateHashData{
+        //         .task = ThreadPool.Task{ .callback = CalculateHashData.calculate_hash },
+        //         .blocks = &batches_remaining,
+        //         .are_batches_done = &are_batches_done,
+        //         .file_idx = file_idx,
+        //         .batch_in_file = batch_in_file,
+        //         .signature_file = self,
+        //         .num_processed_blocks = 0,
+        //         .dir = dir_handle,
+        //         .out_hashes = undefined,
+        //     };
+
+        //     batch.push(ThreadPool.Batch.from(&tasks[batch_idx].task));
+
+        //     batch_in_file += 1;
+        // }
+
+        // thread_pool.schedule(batch);
+
+        // try self.blocks.ensureTotalCapacity(num_blocks);
+
+        // var num_batches_remaining = batches_remaining.load(.Acquire);
+        // while (num_batches_remaining > 0 and are_batches_done.load(.Acquire) == 0) {
+        //     if (on_progress) |progress_callback_unwrapped| {
+        //         var elapsed_progress = (1.0 - @intToFloat(f32, num_batches_remaining) / @intToFloat(f32, num_batches_of_work)) * 100;
+        //         progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Hashing Blocks");
+        //     }
+
+        //     std.time.sleep(std.time.ns_per_ms * 100);
+        //     num_batches_remaining = batches_remaining.load(.Acquire);
+        // }
+
+        // for (tasks) |calculate_hash_data| {
+        //     const start_block_idx = calculate_hash_data.batch_in_file * CalculateHashData.BlocksPerBatchOfWork;
+
+        //     for (calculate_hash_data.out_hashes[0..calculate_hash_data.num_processed_blocks], 0..) |hash, idx| {
+        //         self.blocks.appendAssumeCapacity(.{ .file_idx = calculate_hash_data.file_idx, .block_idx = @intCast(u32, start_block_idx) + @intCast(u32, idx), .hash = hash });
+        //     }
+        // }
 
         std.log.info("Blocks are done", .{});
     }
