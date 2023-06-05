@@ -11,10 +11,14 @@ pub const RollingHash = struct {
     const _M: u32 = 1 << 16;
 
     pub fn next(self: *RollingHash, buffer: []u8, tail: usize, head: usize) void {
-        var a_push: u32 = buffer[head];
-        var a_pop: u32 = buffer[tail];
+        self.nextImpl(buffer[tail], buffer[head], head - tail);
+    }
+
+    pub fn nextImpl(self: *RollingHash, last_value: u32, new_value: u32, distance: usize) void {
+        var a_push: u32 = new_value;
+        var a_pop: u32 = last_value;
         self.state_0 = (self.state_0 -% a_pop +% a_push) % _M;
-        self.state_1 = (self.state_1 -% @intCast(u32, head - (tail)) *% a_pop +% self.state_0);
+        self.state_1 = (self.state_1 -% @intCast(u32, distance) *% a_pop +% self.state_0);
 
         self.hash = self.state_0 +% _M *% self.state_1;
     }

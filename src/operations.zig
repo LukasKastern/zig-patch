@@ -84,8 +84,7 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
     var apply_patch_stats: ?*OperationStats.ApplyPatchStats = null;
 
     if (stats) |stats_unwrapped| {
-        var on_disk_signature = patch.new.signature_file_data.?.OnDiskSignatureFile;
-        stats_unwrapped.apply_patch_stats = .{ .num_files = on_disk_signature.locked_directory.files.items.len, .num_directories = on_disk_signature.locked_directory.directories.items.len };
+        stats_unwrapped.apply_patch_stats = .{ .num_files = patch.new.numFiles(), .num_directories = patch.new.numDirectories() };
         apply_patch_stats = &stats_unwrapped.apply_patch_stats.?;
     }
 
@@ -232,6 +231,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
     if (previous_signature == null) {
         std.log.warn("{s}", .{"No previous signature specified. A full patch will be generated. Specify a previous signature using --previous_signature <path>"});
         prev_signature_file = try SignatureFile.init(allocator);
+        try prev_signature_file.?.initializeToEmptyInMemoryFile();
     } else {
         var out_file = try cwd.openFile(previous_signature.?, .{});
         defer out_file.close();
@@ -284,14 +284,14 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
             stats_unwrapped.create_patch_stats = .{};
             create_patch_stats = &stats_unwrapped.create_patch_stats.?;
 
-            var signature_file_data = &new_signature_file.signature_file_data.?.OnDiskSignatureFile;
-            for (signature_file_data.locked_directory.files.items) |signature_file_elem| {
-                create_patch_stats.?.total_signature_folder_size_bytes += signature_file_elem.size;
+            for (0..new_signature_file.numFiles()) |file_idx| {
+                var file = new_signature_file.getFile(file_idx);
+                create_patch_stats.?.total_signature_folder_size_bytes += file.size;
             }
         }
 
         var create_patch_start_sample = timer.read();
-        try PatchGeneration.createPatch(thread_pool, new_signature_file, prev_signature_file.?, allocator, .{ .build_dir = open_dir, .staging_dir = staging_dir }, create_patch_stats, config.progress_callback);
+        try PatchGeneration.createPatchV2(&patch_io, thread_pool, new_signature_file, prev_signature_file.?, allocator, .{ .build_dir = open_dir, .staging_dir = staging_dir }, create_patch_stats, config.progress_callback);
         var create_patch_finish_sample = timer.read();
 
         if (stats) |*operation_stats| {
@@ -348,14 +348,14 @@ pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []con
 
         var total_signature_folder_size_bytes: usize = 0;
 
-        var on_disk_signature_file = &signature_file.signature_file_data.?.OnDiskSignatureFile;
-        for (on_disk_signature_file.locked_directory.files.items) |signature_file_elem| {
+        for (0..signature_file.numFiles()) |signature_file_elem_idx| {
+            var signature_file_elem = signature_file.getFile(signature_file_elem_idx);
             total_signature_folder_size_bytes += signature_file_elem.size;
         }
 
         var make_signature_stats: OperationStats.MakeSignatureStats = .{
-            .num_files = on_disk_signature_file.locked_directory.files.items.len,
-            .num_directories = on_disk_signature_file.locked_directory.directories.items.len,
+            .num_files = signature_file.numFiles(),
+            .num_directories = signature_file.numDirectories(),
             .total_signature_folder_size_bytes = total_signature_folder_size_bytes,
         };
 

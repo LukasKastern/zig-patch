@@ -9,7 +9,7 @@
             "command": "${config:zig.zigPath}",
             "args": [   
                 "build",
-                "-Doptimize=ReleaseFast",
+                "-Doptimize=Debug",
             ],
             "group": {
                 "kind": "build",

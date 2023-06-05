@@ -17,15 +17,15 @@ pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
     const old_signature = patch.old;
     const new_signature = patch.new;
 
-    var old_signature_data = old_signature.signature_file_data.?.InMemorySignatureFile;
-    var new_signature_data = new_signature.signature_file_data.?.OnDiskSignatureFile;
-
     // Delete all files that do not exist anymore
-    for (old_signature_data.files.items) |file| {
+    for (0..old_signature.numFiles()) |file_idx| {
+        var file = old_signature.getFile(file_idx);
+
         var does_file_still_exist = false;
 
-        for (new_signature_data.locked_directory.files.items) |new_signature_file| {
-            does_file_still_exist = does_file_still_exist or std.mem.eql(u8, new_signature_file.resolvePath(new_signature_data.locked_directory), file.name);
+        for (0..new_signature.numFiles()) |new_signature_file_idx| {
+            var new_signature_file = new_signature.getFile(new_signature_file_idx);
+            does_file_still_exist = does_file_still_exist or std.mem.eql(u8, new_signature_file.name, file.name);
         }
 
         if (!does_file_still_exist) {
@@ -34,11 +34,14 @@ pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
     }
 
     // Delete all directories that do not exist anymore
-    for (old_signature_data.directories.items) |directory| {
+    for (0..old_signature.numDirectories()) |directory_idx| {
+        var directory = old_signature.getDirectory(directory_idx);
         var does_dir_still_exist = false;
 
-        for (new_signature_data.locked_directory.directories.items) |new_directory_file| {
-            does_dir_still_exist = does_dir_still_exist or std.mem.eql(u8, new_directory_file.resolvePath(new_signature_data.locked_directory), directory.path);
+        for (0..new_signature.numDirectories()) |new_directory_file_idx| {
+            var new_directory_file = new_signature.getDirectory(new_directory_file_idx);
+
+            does_dir_still_exist = does_dir_still_exist or std.mem.eql(u8, new_directory_file.path, directory.path);
         }
 
         if (!does_dir_still_exist) {
@@ -48,27 +51,31 @@ pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
     }
 
     // Now reverse the order operation and create all directories + files that did not exist in the old signature
-    for (new_signature_data.locked_directory.directories.items) |directory| {
+    for (0..new_signature.numDirectories()) |directory_idx| {
+        var directory = new_signature.getDirectory(directory_idx);
         var did_dir_exist = false;
 
-        for (old_signature_data.directories.items) |old_directory_file| {
-            did_dir_exist = did_dir_exist or std.mem.eql(u8, old_directory_file.path, directory.resolvePath(new_signature_data.locked_directory));
+        for (0..old_signature.numDirectories()) |old_directory_file_idx| {
+            var old_directory_file = old_signature.getDirectory(old_directory_file_idx);
+            did_dir_exist = did_dir_exist or std.mem.eql(u8, old_directory_file.path, directory.path);
         }
 
         if (!did_dir_exist) {
-            try target_dir.makePath(directory.resolvePath(new_signature_data.locked_directory));
+            try target_dir.makePath(directory.path);
         }
     }
 
-    for (new_signature_data.locked_directory.files.items) |file| {
+    for (0..new_signature.numFiles()) |file_idx| {
+        var file = new_signature.getFile(file_idx);
         var did_file_exist = false;
 
-        for (old_signature_data.files.items) |old_file| {
-            did_file_exist = did_file_exist or std.mem.eql(u8, old_file.name, file.resolvePath(new_signature_data.locked_directory));
+        for (0..old_signature.numFiles()) |old_file_idx| {
+            var old_file = old_signature.getFile(old_file_idx);
+            did_file_exist = did_file_exist or std.mem.eql(u8, old_file.name, file.name);
         }
 
         if (!did_file_exist) {
-            var new_file_fs = try target_dir.createFile(file.resolvePath(new_signature_data.locked_directory), .{});
+            var new_file_fs = try target_dir.createFile(file.name, .{});
             new_file_fs.close();
         }
     }
@@ -161,7 +168,7 @@ const ApplyPatchTask = struct {
                     var block_range = operation.BlockRange;
                     var block = self.anchored_blocks_map.getBlock(block_range.file_index, block_range.block_index);
 
-                    var old_signature_file_data = self.old_signature.signature_file_data.?.InMemorySignatureFile;
+                    var old_signature_file_data = self.old_signature.data.?.InMemorySignatureFile;
 
                     var src_file = old_signature_file_data.files.items[block.file_index];
                     var file = try self.source_dir.?.openFile(src_file.name, .{});
@@ -262,8 +269,8 @@ pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: 
             .sections_remaining = &sections_remaining, 
             .per_thread_patch_files = per_thread_patch_files, 
             .task = ThreadPool.Task{ .callback = ApplyPatchTask.applyPatch }, 
-            .file = patch.new.signature_file_data.?.OnDiskSignatureFile.locked_directory.files.items[section.file_idx],
-            .locked_directory =  patch.new.signature_file_data.?.OnDiskSignatureFile.locked_directory,
+            .file = patch.new.data.?.OnDiskSignatureFile.locked_directory.files.items[section.file_idx],
+            .locked_directory =  patch.new.data.?.OnDiskSignatureFile.locked_directory,
         };
         // zig fmt: on
 
