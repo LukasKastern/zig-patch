@@ -11,6 +11,8 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardOptimizeOption(.{});
 
+    var clap = b.dependency("zig_clap", .{}).module("clap");
+
     var zlib_dep = b.dependency("zlib", .{
         .target = target,
         .optimize = mode,
@@ -69,7 +71,7 @@ pub fn build(b: *std.build.Builder) void {
 
     const exe = b.addExecutable(.{ .name = "zig-patch", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = mode });
 
-    exe.install();
+    _ = b.addInstallArtifact(exe);
 
     exe.linkLibrary(zstd);
     exe.linkLibrary(brotli_common);
@@ -78,7 +80,7 @@ pub fn build(b: *std.build.Builder) void {
     exe.linkLibrary(zlib_dep.artifact("z"));
     exe.addIncludePath(zstd_root);
 
-    const run_cmd = exe.run();
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
@@ -103,13 +105,12 @@ pub fn build(b: *std.build.Builder) void {
     } // <<< TEST - BUILD ONLY <<<
 
     { // >>> TEST - BUILD AND RUN >>>
-        const run_test_cmd = test_exe.run();
+        const run_test_cmd = b.addRunArtifact(test_exe);
         run_test_cmd.step.dependOn(&install_test.step);
 
         const run_test_step = b.step("test", "Run unit tests");
         run_test_step.dependOn(&run_test_cmd.step);
     } // <<< TEST - BUILD AND RUN <<<
 
-    var clap = b.dependency("zig_clap", .{}).module("clap");
     exe.addModule("clap", clap);
 }
