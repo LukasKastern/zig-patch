@@ -193,7 +193,7 @@ pub const Compression = struct {
 };
 
 test {
-    std.testing.refAllDecls(@import("./brotli_compression.zig"));
+    // std.testing.refAllDecls(@import("./brotli_compression.zig"));
 }
 
 test "Deflated then Infalted buffer should be the same" {

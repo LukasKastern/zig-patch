@@ -448,15 +448,6 @@ pub const SignatureFile = struct {
         var signature_file = try SignatureFile.init(allocator);
         errdefer signature_file.deinit();
 
-        // var out_file = try std.fs.openFileAbsolute(target_path, .{});
-        // defer out_file.close();
-
-        // const BufferedFileReader = std.io.BufferedReader(1200, std.fs.File.Reader);
-        // var buffered_file_reader: BufferedFileReader = .{
-        //     .unbuffered_reader = out_file.reader(),
-        // };
-        // var reader = buffered_file_reader.reader();
-
         var read_buffer: [1028]u8 = undefined;
 
         var type_tag_len = try reader.readInt(usize, Endian);
@@ -475,17 +466,19 @@ pub const SignatureFile = struct {
 
         const num_directories = try reader.readInt(usize, Endian);
 
-        signature_file.data = .{ .InMemorySignatureFile = .{
-            .directories = try std.ArrayList(Directory).initCapacity(signature_file.allocator, num_directories),
-            .files = undefined,
-        } };
+        signature_file.data = .{
+            .InMemorySignatureFile = .{
+                .directories = try std.ArrayList(Directory).initCapacity(signature_file.allocator, num_directories),
+                .files = undefined,
+            },
+        };
 
         var signature_data = &signature_file.data.?.InMemorySignatureFile;
+        try signature_data.directories.resize(num_directories);
 
         var total_allocated_len: usize = 0;
         for (signature_data.directories.items) |*directory| {
             const path_length = try reader.readInt(usize, Endian);
-
             total_allocated_len += path_length;
             var path_buffer = try signature_file.allocator.alloc(u8, path_length);
             errdefer signature_file.allocator.free(path_buffer);
@@ -495,8 +488,8 @@ pub const SignatureFile = struct {
         }
 
         const num_files = try reader.readInt(usize, Endian);
-
         signature_data.files = try std.ArrayList(File).initCapacity(signature_file.allocator, num_files);
+        try signature_data.files.resize(num_files);
 
         for (signature_data.files.items) |*file| {
             const path_length = try reader.readInt(usize, Endian);

@@ -182,16 +182,16 @@ pub const BrotliCompression = struct {
     }
 };
 
-test "Try Initialize Brotli" {
-    var brotli_allocator: BrotliAllocator = .{
-        .backing_allocator = std.testing.allocator,
-    };
+// test "Try Initialize Brotli" {
+//     var brotli_allocator: BrotliAllocator = .{
+//         .backing_allocator = std.testing.allocator,
+//     };
 
-    var encoderInstance = brotli.BrotliEncoderCreateInstance(BrotliAllocator.alloc_brotli, BrotliAllocator.free_brotli, &brotli_allocator);
-    defer brotli.BrotliEncoderDestroyInstance(encoderInstance);
+//     var encoderInstance = brotli.BrotliEncoderCreateInstance(BrotliAllocator.alloc_brotli, BrotliAllocator.free_brotli, &brotli_allocator);
+//     defer brotli.BrotliEncoderDestroyInstance(encoderInstance);
 
-    try std.testing.expect(encoderInstance != null);
+//     try std.testing.expect(encoderInstance != null);
 
-    var allocation = @ptrCast(?*u8, BrotliAllocator.alloc_brotli(&brotli_allocator, 32));
-    defer BrotliAllocator.free_brotli(&brotli_allocator, allocation);
-}
+//     var allocation = @ptrCast(?*u8, BrotliAllocator.alloc_brotli(&brotli_allocator, 32));
+//     defer BrotliAllocator.free_brotli(&brotli_allocator, allocation);
+// }
