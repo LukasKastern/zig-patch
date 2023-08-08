@@ -51,10 +51,10 @@ pub fn copyFolder(dst: std.fs.Dir, src: std.fs.Dir) !void {
 
         while (try dir_iterator.next()) |entry| {
             switch (entry.kind) {
-                .File => {
+                .file => {
                     try directory.copyFile(entry.name, current_dst_dir, entry.name, .{});
                 },
-                .Directory => {
+                .directory => {
                     var nested_dir = try directory.openDir(entry.name, .{});
                     try directories.append(nested_dir);
                 },

@@ -153,10 +153,10 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
     try cwd.rename(tmp_folder_path, folder_to_patch);
 
     var end_sample = timer.read();
-    std.log.info("Applied Patch in {d:2}ms", .{(@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000});
+    std.log.info("Applied Patch in {d:2}ms", .{(@as(f64, @floatFromInt(end_sample)) - @as(f64, @floatFromInt(start_sample))) / 1000000});
 
     if (stats) |*operation_stats| {
-        operation_stats.*.total_operation_time = (@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000;
+        operation_stats.*.total_operation_time = (@as(f64, @floatFromInt(end_sample)) - @as(f64, @floatFromInt(start_sample))) / 1000000;
     }
 }
 
@@ -250,7 +250,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
         };
 
         var post_signature_load_time = timer.read();
-        std.log.info("Loaded Previous Signature in {d:2}ms", .{(@intToFloat(f64, post_signature_load_time) - @intToFloat(f64, start_sample)) / 1000000});
+        std.log.info("Loaded Previous Signature in {d:2}ms", .{(@as(f64, @floatFromInt(post_signature_load_time)) - @as(f64, @floatFromInt(start_sample))) / 1000000});
     }
 
     var staging_patch_path_buffer: [512]u8 = undefined;
@@ -269,7 +269,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
         try new_signature_file.generateFromFolder(open_dir, thread_pool, config.progress_callback);
         var generate_signature_finish_sample = timer.read();
 
-        std.log.info("Generated Signature in {d:2}ms", .{(@intToFloat(f64, generate_signature_finish_sample) - @intToFloat(f64, generate_signature_start_sample)) / 1000000});
+        std.log.info("Generated Signature in {d:2}ms", .{(@as(f64, @floatFromInt(generate_signature_finish_sample)) - @as(f64, @floatFromInt(generate_signature_start_sample))) / 1000000});
 
         std.log.info("Creating Patch...", .{});
 
@@ -289,7 +289,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
         var create_patch_finish_sample = timer.read();
 
         if (stats) |*operation_stats| {
-            operation_stats.*.total_operation_time = (@intToFloat(f64, create_patch_finish_sample) - @intToFloat(f64, create_patch_start_sample)) / 1000000;
+            operation_stats.*.total_operation_time = (@as(f64, @floatFromInt(create_patch_finish_sample)) - @as(f64, @floatFromInt(create_patch_start_sample))) / 1000000;
         }
 
         staging_dir_path = try staging_dir.realpath("", &staging_patch_path_buffer);
@@ -335,7 +335,7 @@ pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []con
     var make_signature_finish_sample = timer.read();
 
     if (stats) |*operation_stats| {
-        operation_stats.*.total_operation_time = (@intToFloat(f64, make_signature_finish_sample) - @intToFloat(f64, make_signature_start_sample)) / 1000000;
+        operation_stats.*.total_operation_time = (@as(f64, @floatFromInt(make_signature_finish_sample)) - @as(f64, @floatFromInt(make_signature_start_sample))) / 1000000;
 
         var total_signature_folder_size_bytes: usize = 0;
 

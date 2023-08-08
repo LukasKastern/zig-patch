@@ -65,20 +65,20 @@ pub fn build(b: *std.build.Builder) void {
         zstd_root ++ "/decompress/zstd_decompress_block.c",
     }, &.{});
 
-    zstd.addIncludePath(zstd_root);
+    zstd.addIncludePath(.{ .path = zstd_root });
 
     const exe = b.addExecutable(.{ .name = "zig-patch", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = mode });
 
-    exe.install();
+    b.installArtifact(exe);
 
     exe.linkLibrary(zstd);
     exe.linkLibrary(brotli_common);
     exe.linkLibrary(brotli_enc);
     exe.linkLibrary(brotli_dec);
     exe.linkLibrary(zlib_dep.artifact("z"));
-    exe.addIncludePath(zstd_root);
+    exe.addIncludePath(.{ .path = zstd_root });
 
-    const run_cmd = exe.run();
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
@@ -93,9 +93,9 @@ pub fn build(b: *std.build.Builder) void {
     test_exe.linkLibrary(brotli_dec);
     test_exe.linkLibrary(zlib_dep.artifact("z"));
     test_exe.linkLibrary(zstd);
-    test_exe.addIncludePath(zstd_root);
+    test_exe.addIncludePath(.{ .path = zstd_root });
 
-    const install_test = b.addInstallArtifact(test_exe);
+    const install_test = b.addInstallArtifact(test_exe, .{});
 
     { // >>> TEST - BUILD ONLY >>>
         const install_test_step = b.step("build-test", "Build unit tests");
@@ -103,7 +103,7 @@ pub fn build(b: *std.build.Builder) void {
     } // <<< TEST - BUILD ONLY <<<
 
     { // >>> TEST - BUILD AND RUN >>>
-        const run_test_cmd = test_exe.run();
+        const run_test_cmd = b.addRunArtifact(test_exe);
         run_test_cmd.step.dependOn(&install_test.step);
 
         const run_test_step = b.step("test", "Run unit tests");

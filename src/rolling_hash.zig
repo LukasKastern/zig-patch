@@ -14,7 +14,7 @@ pub const RollingHash = struct {
         var a_push: u32 = buffer[head];
         var a_pop: u32 = buffer[tail];
         self.state_0 = (self.state_0 -% a_pop +% a_push) % _M;
-        self.state_1 = (self.state_1 -% @intCast(u32, head - (tail)) *% a_pop +% self.state_0);
+        self.state_1 = (self.state_1 -% @as(u32, @intCast(head - (tail))) *% a_pop +% self.state_0);
 
         self.hash = self.state_0 +% _M *% self.state_1;
     }
@@ -23,11 +23,11 @@ pub const RollingHash = struct {
         var a: u32 = 0;
         var b: u32 = 0;
 
-        const span = @intCast(u32, block.len - 1);
+        const span = @as(u32, @intCast(block.len - 1));
         for (block, 0..) |val, idx| {
             a +%= val;
 
-            var index = (@intCast(u32, idx));
+            var index = (@as(u32, @intCast(idx)));
             var multiplier = (span - index + 1);
 
             var value_to_add = val *% multiplier;

@@ -18,7 +18,7 @@ pub const BlockRangeOperation = struct {
 pub const PatchOperation = union(enum) { Invalid: void, BlockRange: BlockRangeOperation, Data: []u8 };
 
 pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, max_operation_len: usize, allocator: std.mem.Allocator) !std.ArrayList(PatchOperation) {
-    const max_operations = @floatToInt(usize, @ceil(@intToFloat(f64, buffer.len) / @intToFloat(f64, BlockSize)));
+    const max_operations = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(buffer.len)) / @as(f64, @floatFromInt(BlockSize)))));
     var patch_operations = try std.ArrayList(PatchOperation).initCapacity(allocator, max_operations);
 
     var tail: usize = 0;
@@ -31,7 +31,7 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
 
     while (tail <= buffer.len) {
         if (jump_to_next_block) {
-            head = std.math.min(head + BlockSize, buffer.len);
+            head = @min(head + BlockSize, buffer.len);
 
             if (tail == head) {
                 break;
@@ -77,7 +77,7 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
             jump_to_next_block = true;
         } else {
             tail += 1;
-            head = std.math.min(head + 1, buffer.len);
+            head = @min(head + 1, buffer.len);
             const reached_end_of_buffer = tail == head;
             const can_omit_data_op = owed_data_tail != tail;
             const needs_to_omit_data_op = reached_end_of_buffer or (tail - owed_data_tail >= max_operation_len);
@@ -99,7 +99,7 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
 test "Operations for buffer without Reference should rebuild the original buffer" {
     const max_operation_len: usize = 512;
 
-    const buffer_size = @trunc(@intToFloat(f64, max_operation_len) * 4);
+    const buffer_size = @trunc(@as(f64, @floatFromInt(max_operation_len)) * 4);
     var original_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
     defer std.testing.allocator.free(original_buffer);
 
@@ -137,7 +137,7 @@ test "Operations for buffer without Reference should rebuild the original buffer
 test "Operations for buffer without Reference should rebuild the original buffer - with fractional buffer size of max operation length" {
     const max_operation_len: usize = 512;
 
-    const buffer_size = @trunc(@intToFloat(f64, max_operation_len) * 3.564);
+    const buffer_size = @trunc(@as(f64, @floatFromInt(max_operation_len)) * 3.564);
     var original_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
     defer std.testing.allocator.free(original_buffer);
 

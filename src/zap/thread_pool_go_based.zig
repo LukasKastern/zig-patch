@@ -41,7 +41,7 @@ const Sync = packed struct {
     notified: bool = false,
 
     /// The current state of the thread pool
-    state: u2 = @enumToInt(StateEnum.pending),
+    state: u2 = @intFromEnum(StateEnum.pending),
 };
 
 /// Configuration options for the thread pool.
@@ -53,7 +53,7 @@ pub const Config = struct {
 
 /// Statically initialize the thread pool using the configuration.
 pub fn init(config: Config) ThreadPool {
-    return .{ .stack_size = std.math.max(1, config.stack_size), .max_threads = std.math.max(1, config.max_threads), .num_threads = 0 };
+    return .{ .stack_size = @max(1, config.stack_size), .max_threads = @max(1, config.max_threads), .num_threads = 0 };
 }
 const native_arch = builtin.cpu.arch;
 
@@ -81,9 +81,9 @@ pub fn printJobQueues(self: *ThreadPool) void {
 }
 
 pub fn spawnThreads(self: *ThreadPool) void {
-    var sync = @bitCast(Sync, self.sync.load(.Monotonic));
-    sync.spawned = @truncate(u9, self.max_threads);
-    self.sync.store(@bitCast(u32, sync), .Monotonic);
+    var sync = @as(Sync, @bitCast(self.sync.load(.Monotonic)));
+    sync.spawned = @as(u9, @truncate(self.max_threads));
+    self.sync.store(@as(u32, @bitCast(sync)), .Monotonic);
 
     var numSpawned: u32 = 0;
 
@@ -190,7 +190,7 @@ inline fn notify(self: *ThreadPool, is_waking: bool) void {
     // Fast path to check the Sync state to avoid calling into notifySlow().
     // If we're waking, then we need to update the state regardless
     if (!is_waking) {
-        const sync = @bitCast(Sync, self.sync.load(.Monotonic));
+        const sync = @as(Sync, @bitCast(self.sync.load(.Monotonic)));
         if (sync.notified) {
             if (self.enable_extensive_logging)
                 std.log.info("Already notified", .{});
@@ -202,28 +202,28 @@ inline fn notify(self: *ThreadPool, is_waking: bool) void {
 }
 
 noinline fn notifySlow(self: *ThreadPool, is_waking: bool) void {
-    var sync = @bitCast(Sync, self.sync.load(.Monotonic));
-    while (sync.state != @enumToInt(StateEnum.shutdown)) {
-        const can_wake = is_waking or (sync.state == @enumToInt(StateEnum.pending));
+    var sync = @as(Sync, @bitCast(self.sync.load(.Monotonic)));
+    while (sync.state != @intFromEnum(StateEnum.shutdown)) {
+        const can_wake = is_waking or (sync.state == @intFromEnum(StateEnum.pending));
         if (is_waking) {
-            assert(sync.state == @enumToInt(StateEnum.waking));
+            assert(sync.state == @intFromEnum(StateEnum.waking));
         }
 
         var new_sync = sync;
         new_sync.notified = true;
         if (can_wake and sync.idle > 0) { // wake up an idle thread
-            new_sync.state = @enumToInt(StateEnum.signaled);
+            new_sync.state = @intFromEnum(StateEnum.signaled);
         } else if (is_waking) { // no other thread to pass on "waking" status
-            new_sync.state = @enumToInt(StateEnum.pending);
+            new_sync.state = @intFromEnum(StateEnum.pending);
         } else if (sync.notified) { // nothing to update
             return;
         }
 
         // Release barrier synchronizes with Acquire in wait()
         // to ensure pushes to run queues happen before observing a posted notification.
-        sync = @bitCast(Sync, self.sync.tryCompareAndSwap(
-            @bitCast(u32, sync),
-            @bitCast(u32, new_sync),
+        sync = @as(Sync, @bitCast(self.sync.tryCompareAndSwap(
+            @as(u32, @bitCast(sync)),
+            @as(u32, @bitCast(new_sync)),
             .Release,
             .Monotonic,
         ) orelse {
@@ -239,23 +239,23 @@ noinline fn notifySlow(self: *ThreadPool, is_waking: bool) void {
             }
 
             return;
-        });
+        }));
     }
 }
 
 noinline fn wait(self: *ThreadPool, _is_waking: bool) error{Shutdown}!bool {
     var is_idle = false;
     var is_waking = _is_waking;
-    var sync = @bitCast(Sync, self.sync.load(.Monotonic));
+    var sync = @as(Sync, @bitCast(self.sync.load(.Monotonic)));
 
     while (true) {
-        if (sync.state == @enumToInt(StateEnum.shutdown)) {
+        if (sync.state == @intFromEnum(StateEnum.shutdown)) {
             if (self.enable_extensive_logging)
                 std.log.info("Thread [{}] received shutdown event", .{Thread.current.?.idx});
 
             return error.Shutdown;
         }
-        if (is_waking) assert(sync.state == @enumToInt(StateEnum.waking));
+        if (is_waking) assert(sync.state == @intFromEnum(StateEnum.waking));
 
         // Consume a notification made by notify().
         if (sync.notified) {
@@ -264,14 +264,14 @@ noinline fn wait(self: *ThreadPool, _is_waking: bool) error{Shutdown}!bool {
             if (is_idle) {
                 new_sync.idle -= 1;
             }
-            if (sync.state == @enumToInt(StateEnum.signaled))
-                new_sync.state = @enumToInt(StateEnum.waking);
+            if (sync.state == @intFromEnum(StateEnum.signaled))
+                new_sync.state = @intFromEnum(StateEnum.waking);
 
             // Acquire barrier synchronizes with notify()
             // to ensure that pushes to run queue are observed after wait() returns.
-            sync = @bitCast(Sync, self.sync.tryCompareAndSwap(
-                @bitCast(u32, sync),
-                @bitCast(u32, new_sync),
+            sync = @as(Sync, @bitCast(self.sync.tryCompareAndSwap(
+                @as(u32, @bitCast(sync)),
+                @as(u32, @bitCast(new_sync)),
                 .Acquire,
                 .Monotonic,
             ) orelse {
@@ -279,8 +279,8 @@ noinline fn wait(self: *ThreadPool, _is_waking: bool) error{Shutdown}!bool {
                     std.log.info("Thread [{}] changed num idle threads from {} to {}", .{ Thread.current.?.idx, sync.idle, sync.idle - 1 });
                 }
 
-                return is_waking or (sync.state == @enumToInt(StateEnum.signaled));
-            });
+                return is_waking or (sync.state == @intFromEnum(StateEnum.signaled));
+            }));
 
             // No notification to consume.
             // Mark this thread as idle before sleeping on the idle_event.
@@ -288,18 +288,18 @@ noinline fn wait(self: *ThreadPool, _is_waking: bool) error{Shutdown}!bool {
             var new_sync = sync;
             new_sync.idle += 1;
             if (is_waking)
-                new_sync.state = @enumToInt(StateEnum.pending);
+                new_sync.state = @intFromEnum(StateEnum.pending);
 
-            sync = @bitCast(Sync, self.sync.tryCompareAndSwap(
-                @bitCast(u32, sync),
-                @bitCast(u32, new_sync),
+            sync = @as(Sync, @bitCast(self.sync.tryCompareAndSwap(
+                @as(u32, @bitCast(sync)),
+                @as(u32, @bitCast(new_sync)),
                 .Monotonic,
                 .Monotonic,
             ) orelse {
                 is_waking = false;
                 is_idle = true;
                 continue;
-            });
+            }));
 
             // Wait for a signal by either notify() or shutdown() without wasting cpu cycles.
             // TODO: Add I/O polling here.
@@ -308,24 +308,24 @@ noinline fn wait(self: *ThreadPool, _is_waking: bool) error{Shutdown}!bool {
                 std.log.info("Thread [{}] going to sleep now, NumIdleThreads={}", .{ Thread.current.?.idx, sync.idle });
             }
             self.idle_event.wait();
-            sync = @bitCast(Sync, self.sync.load(.Monotonic));
+            sync = @as(Sync, @bitCast(self.sync.load(.Monotonic)));
         }
     }
 }
 
 /// Marks the thread pool as shutdown
 pub noinline fn shutdown(self: *ThreadPool) void {
-    var sync = @bitCast(Sync, self.sync.load(.Monotonic));
-    while (sync.state != @enumToInt(StateEnum.shutdown)) {
+    var sync = @as(Sync, @bitCast(self.sync.load(.Monotonic)));
+    while (sync.state != @intFromEnum(StateEnum.shutdown)) {
         var new_sync = sync;
         new_sync.notified = true;
-        new_sync.state = @enumToInt(StateEnum.shutdown);
+        new_sync.state = @intFromEnum(StateEnum.shutdown);
         new_sync.idle = 0;
 
         // Full barrier to synchronize with both wait() and notify()
-        sync = @bitCast(Sync, self.sync.tryCompareAndSwap(
-            @bitCast(u32, sync),
-            @bitCast(u32, new_sync),
+        sync = @as(Sync, @bitCast(self.sync.tryCompareAndSwap(
+            @as(u32, @bitCast(sync)),
+            @as(u32, @bitCast(new_sync)),
             .AcqRel,
             .Monotonic,
         ) orelse {
@@ -344,7 +344,7 @@ pub noinline fn shutdown(self: *ThreadPool) void {
                 self.idle_event.shutdown();
             }
             return;
-        });
+        }));
     }
 }
 
@@ -366,12 +366,12 @@ fn unregister(noalias self: *ThreadPool, noalias maybe_thread: ?*Thread) void {
     // Un-spawn one thread, either due to a failed OS thread spawning or the thread is exitting.
 
     const one_spawned_sync = Sync{ .spawned = 1 };
-    const one_spawned = @bitCast(u32, one_spawned_sync);
-    const sync = @bitCast(Sync, self.sync.fetchSub(one_spawned, .Release));
+    const one_spawned = @as(u32, @bitCast(one_spawned_sync));
+    const sync = @as(Sync, @bitCast(self.sync.fetchSub(one_spawned, .Release)));
     assert(sync.spawned > 0);
     // The last thread to exit must wake up the thread pool join()er
     // who will start the chain to shutdown all the threads.
-    if (sync.state == @enumToInt(StateEnum.shutdown) and sync.spawned == 1) {
+    if (sync.state == @intFromEnum(StateEnum.shutdown) and sync.spawned == 1) {
         self.join_event.notify();
     }
 
@@ -388,13 +388,13 @@ fn unregister(noalias self: *ThreadPool, noalias maybe_thread: ?*Thread) void {
 
 fn join(self: *ThreadPool) void {
     // Wait for the thread pool to be shutdown() then for all threads to enter a joinable state
-    var sync = @bitCast(Sync, self.sync.load(.Monotonic));
-    if (!(sync.state == @enumToInt(StateEnum.shutdown) and sync.spawned == 0)) {
+    var sync = @as(Sync, @bitCast(self.sync.load(.Monotonic)));
+    if (!(sync.state == @intFromEnum(StateEnum.shutdown) and sync.spawned == 0)) {
         self.join_event.wait();
-        sync = @bitCast(Sync, self.sync.load(.Monotonic));
+        sync = @as(Sync, @bitCast(self.sync.load(.Monotonic)));
     }
 
-    assert(sync.state == @enumToInt(StateEnum.shutdown));
+    assert(sync.state == @intFromEnum(StateEnum.shutdown));
     assert(sync.spawned == 0);
 
     // If there are threads, start off the chain sending it the shutdown signal.
@@ -471,7 +471,7 @@ pub const Thread = struct {
         // TODO: add optimistic I/O polling here
 
         // Then try work stealing from other threads
-        var num_threads: u32 = @bitCast(Sync, thread_pool.sync.load(.Monotonic)).spawned;
+        var num_threads: u32 = @as(Sync, @bitCast(thread_pool.sync.load(.Monotonic))).spawned;
         while (num_threads > 0) : (num_threads -= 1) {
             // Traverse the stack of registered threads on the thread pool
             const target = self.target orelse thread_pool.threads.load(.Acquire) orelse unreachable;
@@ -613,11 +613,11 @@ const Node = struct {
             var stack = self.stack.load(.Monotonic);
             while (true) {
                 // Attach the list to the stack (pt. 1)
-                list.tail.next = @intToPtr(?*Node, stack & PTR_MASK);
+                list.tail.next = @as(?*Node, @ptrFromInt(stack & PTR_MASK));
 
                 // Update the stack with the list (pt. 2).
                 // Don't change the HAS_CACHE and IS_CONSUMING bits of the consumer.
-                var new_stack = @ptrToInt(list.head);
+                var new_stack = @intFromPtr(list.head);
                 assert(new_stack & ~PTR_MASK == 0);
                 new_stack |= (stack & ~PTR_MASK);
                 // Push to the stack with a release barrier for the consumer to see the proper list links.
@@ -652,7 +652,7 @@ const Node = struct {
                     new_stack,
                     .Acquire,
                     .Monotonic,
-                ) orelse return self.cache orelse @intToPtr(*Node, stack & PTR_MASK);
+                ) orelse return self.cache orelse @as(*Node, @ptrFromInt(stack & PTR_MASK));
             }
         }
 
@@ -689,7 +689,7 @@ const Node = struct {
             assert(stack & IS_CONSUMING != 0);
             assert(stack & PTR_MASK != 0);
 
-            const node = @intToPtr(*Node, stack & PTR_MASK);
+            const node = @as(*Node, @ptrFromInt(stack & PTR_MASK));
             consumer_ref.* = node.next;
             return node;
         }

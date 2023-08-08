@@ -12,7 +12,7 @@ const ZlibAllocator = struct {
 
     pub export fn allocZlib(self_opaque: ?*anyopaque, items: c_uint, size: c_uint) ?*anyopaque {
         if (self_opaque) |self_opaque_safe| {
-            var self = @ptrCast(*Self, @alignCast(@alignOf(Self), self_opaque_safe));
+            var self = @as(*Self, @ptrCast(@alignCast(self_opaque_safe)));
 
             var size_to_alloc = items * size;
 
@@ -23,7 +23,7 @@ const ZlibAllocator = struct {
                 return null;
             };
 
-            var allocation_size = @ptrCast(*usize, @alignCast(@alignOf(usize), data.ptr));
+            var allocation_size = @as(*usize, @ptrCast(@alignCast(data.ptr)));
             allocation_size.* = size_to_alloc;
 
             return data.ptr + @sizeOf(usize);
@@ -38,14 +38,14 @@ const ZlibAllocator = struct {
             return;
         }
 
-        var ptr_u8 = @ptrCast([*]u8, @alignCast(@alignOf(u8), ptr.?));
+        var ptr_u8 = @as([*]u8, @ptrCast(@alignCast(ptr.?)));
         var ptr_beginning_of_size = ptr_u8 - @sizeOf(usize);
-        var allocation_size = @ptrCast(*usize, @alignCast(@alignOf(usize), ptr_beginning_of_size));
+        var allocation_size = @as(*usize, @ptrCast(@alignCast(ptr_beginning_of_size)));
 
         var slice = ptr_beginning_of_size[0..(allocation_size.* + @sizeOf(usize))];
 
         if (self_opaque) |self_opaque_safe| {
-            var self = @ptrCast(*Self, @alignCast(@alignOf(Self), self_opaque_safe));
+            var self = @as(*Self, @ptrCast(@alignCast(self_opaque_safe)));
             self.backing_allocator.free(slice);
         }
     }
@@ -93,9 +93,9 @@ pub const ZlibCompression = struct {
         pub fn deflateStream(impl: *compression.DeflateImpl, input: []u8, output: []u8) error{DeflateError}![]u8 {
             var deflate = @fieldParentPtr(ZlibDeflate, "compression_impl", impl);
 
-            deflate.state.avail_in = @intCast(c_uint, input.len);
+            deflate.state.avail_in = @as(c_uint, @intCast(input.len));
             deflate.state.next_in = input.ptr;
-            deflate.state.avail_out = @intCast(c_uint, output.len);
+            deflate.state.avail_out = @as(c_uint, @intCast(output.len));
             deflate.state.next_out = output.ptr;
 
             var deflate_res = zlib.deflate(&deflate.state, zlib.Z_FINISH);
@@ -150,9 +150,9 @@ pub const ZlibCompression = struct {
         pub fn inflateStream(impl: *compression.InflateImpl, input: []u8, output: []u8) error{InflateError}!void {
             var inflate_impl = @fieldParentPtr(ZlibInflate, "compression_impl", impl);
 
-            inflate_impl.state.avail_in = @intCast(c_uint, input.len);
+            inflate_impl.state.avail_in = @as(c_uint, @intCast(input.len));
             inflate_impl.state.next_in = input.ptr;
-            inflate_impl.state.avail_out = @intCast(c_uint, output.len);
+            inflate_impl.state.avail_out = @as(c_uint, @intCast(output.len));
             inflate_impl.state.next_out = output.ptr;
 
             var inflate_res = zlib.inflate(&inflate_impl.state, zlib.Z_FINISH);

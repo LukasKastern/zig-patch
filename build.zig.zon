@@ -4,16 +4,16 @@
 
     .dependencies = .{
         .zig_clap = .{
-            .url = "https://github.com/LukasKastern/zig-clap/archive/a947131691dcef6d7eae00151e17dd79af145b06.tar.gz",
-            .hash = "1220d3514cdeeae378470958da25363febb1bd8fbbe2dc07655cea8f27c0e28a94c7"
+            .url = "https://github.com/LukasKastern/zig-clap/archive/2a85f565b75d94b92472d42b4350313bd3f6046a.tar.gz",
+            .hash = "1220aa608ac0b0876118a95220a3b91a800e68e3840c39aef766c9ab4b330da5e934",           
         },
         .brotli = .{
-            .url = "https://github.com/LukasKastern/brotli/archive/860e2d0f445c352eff11a9f42ebe0245735ded04.tar.gz",
-            .hash = "12201d9d4a41c50e5078a0849cab8c4f6033a15182d57fb81564206d6bcfeb102bec",
+            .url = "https://github.com/LukasKastern/brotli/archive/553d70b890a633d1bb6609d4465bd977e382212f.tar.gz",
+            .hash = "12202d329ebdbe10faf1e78dd13185e1973f4954e0dcc3fc8eb8fd3165ad2466236d",
         },
         .zlib = .{
-            .url = "https://github.com/andrewrk/libz/archive/9e71b746b83d2b5bf5eb247663eb65a52cf0f68f.tar.gz",
-            .hash = "12204ea3490e5bdf379f56aa11784d906aed6d4c553c724fa5427169915f2cf4a651",
+            .url = "https://github.com/andrewrk/libz/archive/8bf2a1c61b87773131bee2086737b5f02b7c0888.tar.gz",
+            .hash = "12209e851f7e2c6ba2f01de3e11b1771f03e49666065320abd8414aac152bfa75fae",
         },
     },
 }

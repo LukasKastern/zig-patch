@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const BlockHash = @import("block.zig").BlockHash;
 const BlockSize = @import("block.zig").BlockSize;
 const RollingHash = @import("rolling_hash.zig").RollingHash;
@@ -121,7 +122,7 @@ pub const SignatureFile = struct {
                 const block_start_idx_in_buffer = processed_blocks * BlockSize;
                 var remaining_bytes = read_bytes - block_start_idx_in_buffer;
 
-                var block_data = buffer[block_start_idx_in_buffer .. block_start_idx_in_buffer + std.math.min(BlockSize, remaining_bytes)];
+                var block_data = buffer[block_start_idx_in_buffer .. block_start_idx_in_buffer + @min(BlockSize, remaining_bytes)];
 
                 var rolling_hash: RollingHash = .{};
                 rolling_hash.recompute(block_data);
@@ -166,7 +167,7 @@ pub const SignatureFile = struct {
                 continue;
             }
 
-            var blocks_in_file = @floatToInt(usize, @ceil(@intToFloat(f64, signature_file.size) / BlockSize));
+            var blocks_in_file = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(signature_file.size)) / BlockSize)));
             num_blocks += blocks_in_file;
 
             num_batches_of_work += blocks_in_file / CalculateHashData.BlocksPerBatchOfWork;
@@ -189,7 +190,7 @@ pub const SignatureFile = struct {
         var batch_idx: u32 = 0;
 
         while (batch_idx < num_batches_of_work) : (batch_idx += 1) {
-            if (@intCast(usize, batch_in_file) * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= self.files.items[file_idx].size) {
+            if (@as(usize, @intCast(batch_in_file)) * BlockSize * CalculateHashData.BlocksPerBatchOfWork >= self.files.items[file_idx].size) {
                 file_idx += 1;
                 batch_in_file = 0;
             }
@@ -226,7 +227,7 @@ pub const SignatureFile = struct {
         var num_batches_remaining = batches_remaining.load(.Acquire);
         while (num_batches_remaining > 0 and are_batches_done.load(.Acquire) == 0) {
             if (on_progress) |progress_callback_unwrapped| {
-                var elapsed_progress = (1.0 - @intToFloat(f32, num_batches_remaining) / @intToFloat(f32, num_batches_of_work)) * 100;
+                var elapsed_progress = (1.0 - @as(f32, @floatFromInt(num_batches_remaining)) / @as(f32, @floatFromInt(num_batches_of_work))) * 100;
                 progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Hashing Blocks");
             }
 
@@ -238,7 +239,7 @@ pub const SignatureFile = struct {
             const start_block_idx = calculate_hash_data.batch_in_file * CalculateHashData.BlocksPerBatchOfWork;
 
             for (calculate_hash_data.out_hashes[0..calculate_hash_data.num_processed_blocks], 0..) |hash, idx| {
-                self.blocks.appendAssumeCapacity(.{ .file_idx = calculate_hash_data.file_idx, .block_idx = @intCast(u32, start_block_idx) + @intCast(u32, idx), .hash = hash });
+                self.blocks.appendAssumeCapacity(.{ .file_idx = calculate_hash_data.file_idx, .block_idx = @as(u32, @intCast(start_block_idx)) + @as(u32, @intCast(idx)), .hash = hash });
             }
         }
 
@@ -263,14 +264,14 @@ pub const SignatureFile = struct {
             }
 
             switch (entry.kind) {
-                .Directory => {
+                .directory => {
                     var nested_dir = try directory.openDir(entry.name, .{});
                     defer nested_dir.close();
 
                     try self.generateFromFolderImpl(nested_dir, entry_path);
                     try self.directories.append(.{ .path = entry_path, .permissions = 0 });
                 },
-                .File => {
+                .file => {
                     var file = try directory.openFile(entry.name, .{});
                     defer file.close();
 

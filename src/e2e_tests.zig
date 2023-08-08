@@ -385,7 +385,7 @@ test "Patch should delete/create files and folders" {
                     while (try dir_iterator.next()) |entry| {
                         switch (entry.kind) {
                             .File => {
-                                var file_operation_idx = @intToEnum(Operations.OperationFileTypes, rand.intRangeAtMost(u8, 0, 5));
+                                var file_operation_idx = @as(Operations.OperationFileTypes, @enumFromInt(rand.intRangeAtMost(u8, 0, 5)));
 
                                 switch (file_operation_idx) {
                                     .Delete => {
@@ -446,13 +446,13 @@ test "Patch should delete/create files and folders" {
 
                 var end_pos = try file_to_modify.getEndPos();
 
-                var file_size = @intCast(isize, end_pos) + random.intRangeAtMost(isize, -1000, 5000);
+                var file_size = @as(isize, @intCast(end_pos)) + random.intRangeAtMost(isize, -1000, 5000);
 
                 if (file_size < 0) {
                     try file_to_modify.setEndPos(0);
                 } else {
-                    try generateFile(random, file_to_modify, @intCast(usize, file_size));
-                    try file_to_modify.setEndPos(@intCast(usize, file_size));
+                    try generateFile(random, file_to_modify, @as(usize, @intCast(file_size)));
+                    try file_to_modify.setEndPos(@as(usize, @intCast(file_size)));
                 }
             }
 
@@ -469,13 +469,13 @@ test "Patch should delete/create files and folders" {
     var pre_create_patch = timer.read();
     try operations.createPatch("Modified", "OriginalSignature", operation_config, null);
     var create_patch_sample = timer.read();
-    std.log.info("Creating patch took {d:2}ms", .{(@intToFloat(f64, create_patch_sample) - @intToFloat(f64, pre_create_patch)) / 1000000});
+    std.log.info("Creating patch took {d:2}ms", .{(@as(f64, @floatFromInt(create_patch_sample)) - @as(f64, @floatFromInt(pre_create_patch))) / 1000000});
 
     try operation_config.working_dir.rename("Patch.pwd", "PatchToModified.pwd");
     try operations.applyPatch("PatchToModified.pwd", "Original", operation_config, null);
 
     var end_sample = timer.read();
-    std.log.info("Did test in {d:2}ms", .{(@intToFloat(f64, end_sample) - @intToFloat(f64, start_sample)) / 1000000});
+    std.log.info("Did test in {d:2}ms", .{(@as(f64, @floatFromInt(end_sample)) - @as(f64, @floatFromInt(start_sample))) / 1000000});
 
     {
         var src_folder = try cwd.openDir(original_folder_path, .{});

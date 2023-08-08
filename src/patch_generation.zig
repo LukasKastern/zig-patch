@@ -123,8 +123,8 @@ pub fn createPatch(thread_pool: *ThreadPool, new_signature: *SignatureFile, old_
             var operation_allocator = fixed_buffer_allocator.allocator();
             const serialized_data_op_size = 16;
 
-            const max_operation_header_size = @ceil(@intToFloat(f32, self.max_work_unit_size) / BlockSize * serialized_data_op_size);
-            const max_operation_output_size = self.max_work_unit_size + @floatToInt(usize, max_operation_header_size);
+            const max_operation_header_size = @ceil(@as(f32, @floatFromInt(self.max_work_unit_size)) / BlockSize * serialized_data_op_size);
+            const max_operation_output_size = self.max_work_unit_size + @as(usize, @intFromFloat(max_operation_header_size));
 
             var patch_operations_buffer = operation_allocator.alloc(u8, max_operation_output_size) catch unreachable;
 
@@ -205,7 +205,7 @@ fn numPatchFilesNeeded(signature: *SignatureFile, work_unit_size: usize) usize {
     var num_patch_files: usize = 0;
 
     for (signature.files.items) |file| {
-        num_patch_files += @floatToInt(usize, @ceil(@intToFloat(f64, file.size) / @intToFloat(f64, work_unit_size)));
+        num_patch_files += @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(file.size)) / @as(f64, @floatFromInt(work_unit_size)))));
     }
 
     return num_patch_files;
@@ -268,7 +268,7 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
         var file = new_signature.files.items[file_idx];
 
         if (progress_callback) |progress_callback_unwrapped| {
-            var progress = @intToFloat(f32, file_idx_in_patch) / @intToFloat(f32, num_files);
+            var progress = @as(f32, @floatFromInt(file_idx_in_patch)) / @as(f32, @floatFromInt(num_files));
             progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, progress * 100.0, "Assembling Patch");
         }
 
@@ -281,7 +281,7 @@ pub fn assemblePatchFromFiles(new_signature: *SignatureFile, old_signature: *Sig
             file = new_signature.files.items[file_idx];
         }
 
-        var num_parts = @floatToInt(usize, @ceil(@intToFloat(f64, file.size) / @intToFloat(f64, options.max_work_unit_size)));
+        var num_parts = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(file.size)) / @as(f64, @floatFromInt(options.max_work_unit_size)))));
 
         patch_file.sections.items[file_idx_in_patch] = .{ .file_idx = file_idx, .operations_start_pos_in_file = offset_in_file };
 
@@ -387,10 +387,10 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
                 for (generated_operations.items) |operation| {
                     switch (operation) {
                         .Data => |data| {
-                            var blocks_in_data_op = @ceil(@intToFloat(f64, data.len) / @intToFloat(f64, BlockSize));
+                            var blocks_in_data_op = @ceil(@as(f64, @floatFromInt(data.len)) / @as(f64, @floatFromInt(BlockSize)));
                             // std.log.info("Data found in {} and part {}, blocks: {}", .{ self.file_info.file_idx, self.file_info.file_part_idx, blocks_in_data_op });
-                            changed_blocks.* += @floatToInt(usize, blocks_in_data_op);
-                            total_blocks.* += @floatToInt(usize, blocks_in_data_op);
+                            changed_blocks.* += @as(usize, @intFromFloat(blocks_in_data_op));
+                            total_blocks.* += @as(usize, @intFromFloat(blocks_in_data_op));
                             new_bytes.* += data.len;
                         },
                         .BlockRange => {
@@ -495,7 +495,7 @@ pub fn createPerFilePatchOperations(thread_pool: *ThreadPool, new_signature: *Si
     var current_num_patches_remaining = patches_remaining.load(.Acquire);
     while (current_num_patches_remaining != 0 and are_patches_done.load(.Acquire) == 0) {
         if (progress_callback) |progress_callback_unwrapped| {
-            var elapsed_progress = (1.0 - @intToFloat(f32, current_num_patches_remaining) / @intToFloat(f32, num_patch_files)) * 100;
+            var elapsed_progress = (1.0 - @as(f32, @floatFromInt(current_num_patches_remaining)) / @as(f32, @floatFromInt(num_patch_files))) * 100;
             progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Generating Patches");
         }
 

@@ -46,7 +46,7 @@ pub const AnchoredBlocksMap = struct {
             var file = signature_file.files.items[idx];
             element.* = current_block_start;
 
-            var num_blocks_per_file = @floatToInt(usize, @ceil(@intToFloat(f64, file.size) / BlockSize));
+            var num_blocks_per_file = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(file.size)) / BlockSize)));
             current_block_start += num_blocks_per_file;
         }
 
@@ -56,7 +56,7 @@ pub const AnchoredBlocksMap = struct {
             self.all_blocks.items[start_idx + block.block_idx] = anchoredBlockFromSignatureBlock(signature_file, block);
         }
 
-        try self.underlying_hash_map.ensureTotalCapacity(@truncate(u32, signature_file.blocks.items.len));
+        try self.underlying_hash_map.ensureTotalCapacity(@as(u32, @truncate(signature_file.blocks.items.len)));
         try self.anchorBlockHashes();
 
         return self;
@@ -122,7 +122,7 @@ pub const AnchoredBlocksMap = struct {
 
     fn anchoredBlockFromSignatureBlock(signature_file: SignatureFile, signature_block: SignatureBlock) AnchoredBlock {
         var file = signature_file.files.items[signature_block.file_idx];
-        var left_over_bytes = std.math.min(BlockSize, file.size - BlockSize * @intCast(usize, signature_block.block_idx));
+        var left_over_bytes = @min(BlockSize, file.size - BlockSize * @as(usize, @intCast(signature_block.block_idx)));
 
         return .{
             .file_index = signature_block.file_idx,
