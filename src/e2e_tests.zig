@@ -384,7 +384,7 @@ test "Patch should delete/create files and folders" {
 
                     while (try dir_iterator.next()) |entry| {
                         switch (entry.kind) {
-                            .File => {
+                            .file => {
                                 var file_operation_idx = @as(Operations.OperationFileTypes, @enumFromInt(rand.intRangeAtMost(u8, 0, 5)));
 
                                 switch (file_operation_idx) {
@@ -406,7 +406,7 @@ test "Patch should delete/create files and folders" {
                                     else => {},
                                 }
                             },
-                            .Directory => {
+                            .directory => {
                                 if (rand.float(f32) > 0.8) {
                                     var full_file_name = try dir.realpathAlloc(std.testing.allocator, entry.name);
                                     try operations_collection.directories_to_delete.append(full_file_name);

@@ -37,11 +37,11 @@ const BrotliAllocator = struct {
             return;
         }
 
-        var ptr_u8 = @as([*]u8, @ptrCast(@alignCast(ptr.?)));
+        var ptr_u8 = @as([*]u8, @ptrCast(ptr.?));
         var ptr_beginning_of_size = ptr_u8 - @sizeOf(usize);
         var allocation_size = @as(*usize, @ptrCast(@alignCast(ptr_beginning_of_size)));
 
-        var slice = ptr_beginning_of_size[0..(allocation_size.* + @sizeOf(usize))];
+        var slice: []align(@alignOf(usize)) u8 = @alignCast(ptr_beginning_of_size[0..(allocation_size.* + @sizeOf(usize))]);
 
         if (self_opaque) |self_opaque_safe| {
             var self = @as(*Self, @ptrCast(@alignCast(self_opaque_safe)));
