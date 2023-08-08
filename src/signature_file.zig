@@ -64,7 +64,7 @@ pub const SignatureFile = struct {
         }
     }
 
-    pub fn numDirectories(self: *SignatureFile) usize {
+    pub fn numDirectories(self: *const SignatureFile) usize {
         if (self.data) |signature_file_data| {
             switch (signature_file_data) {
                 .InMemorySignatureFile => |mem| return mem.directories.items.len,
@@ -75,7 +75,7 @@ pub const SignatureFile = struct {
         }
     }
 
-    pub fn getFile(self: *SignatureFile, idx: usize) File {
+    pub fn getFile(self: *const SignatureFile, idx: usize) File {
         if (self.data) |signature_file_data| {
             switch (signature_file_data) {
                 .InMemorySignatureFile => |mem| return mem.files.items[idx],
@@ -87,7 +87,7 @@ pub const SignatureFile = struct {
         } else @panic("Idx out of bounds");
     }
 
-    pub fn getDirectory(self: *SignatureFile, idx: usize) Directory {
+    pub fn getDirectory(self: *const SignatureFile, idx: usize) Directory {
         if (self.data) |signature_file_data| {
             switch (signature_file_data) {
                 .InMemorySignatureFile => |mem| return mem.directories.items[idx],
@@ -325,7 +325,7 @@ pub const SignatureFile = struct {
                 read_buffer.file_idx = file_idx;
                 read_buffer.read_len = len_to_read;
 
-                try patch_io.readFile(current_file, read_offset, read_buffer.buffer_data[0..len_to_read], IOCallbackWrapper.onReadComplete, read_buffer);
+                try patch_io.readFile(current_file.handle, read_offset, read_buffer.buffer_data[0..len_to_read], IOCallbackWrapper.onReadComplete, read_buffer);
                 batch_in_file += 1;
                 read_batch += 1;
             }

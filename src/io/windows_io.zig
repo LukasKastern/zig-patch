@@ -1,6 +1,6 @@
 const std = @import("std");
 const PatchIO = @import("patch_io.zig");
-
+const PlatformHandle = PatchIO.PlatformHandle;
 const windows = std.os.windows;
 const ntdll = windows.ntdll;
 
@@ -50,7 +50,14 @@ const kernel32_extra = struct {
 
 const Operation = union(enum) {
     ReadFile: struct {
-        file_info: PatchIO.FileInfo,
+        file_info: PlatformHandle,
+        offset: i64,
+        buffer: []u8,
+        io_status_block: windows.IO_STATUS_BLOCK,
+    },
+
+    WriteFile: struct {
+        file_info: PlatformHandle,
         offset: i64,
         buffer: []u8,
         io_status_block: windows.IO_STATUS_BLOCK,
@@ -293,7 +300,7 @@ fn destroy(implementation: PatchIO.Implementation) void {
     self.allocator.destroy(self);
 }
 
-fn readFile(implementation: PatchIO.Implementation, file_info: PatchIO.FileInfo, offset: usize, buffer: []u8, callback: *const fn (*anyopaque) void, callback_ctx: *anyopaque) PatchIO.PatchIOErrors!void {
+fn readFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offset: usize, buffer: []u8, callback: *const fn (*anyopaque) void, callback_ctx: *anyopaque) PatchIO.PatchIOErrors!void {
     var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
 
     // If there are no slots left we keep ticking until one becomes available.
@@ -307,12 +314,14 @@ fn readFile(implementation: PatchIO.Implementation, file_info: PatchIO.FileInfo,
     std.debug.assert(operation.pending_operation == null);
 
     operation.pending_operation = .{
-        .operation = .{ .ReadFile = .{
-            .file_info = file_info,
-            .offset = @intCast(i64, offset),
-            .buffer = buffer,
-            .io_status_block = undefined,
-        } },
+        .operation = .{
+            .ReadFile = .{
+                .file_info = handle,
+                .offset = @intCast(i64, offset),
+                .buffer = buffer,
+                .io_status_block = undefined,
+            },
+        },
         .callback = callback,
         .callback_context = callback_ctx,
         .overlapped = windows.OVERLAPPED{
@@ -355,7 +364,79 @@ fn readFile(implementation: PatchIO.Implementation, file_info: PatchIO.FileInfo,
         len_to_read += (512 - len_to_read % 512);
     }
 
-    _ = windows.kernel32.ReadFile(file_info.handle, read_file_op.buffer.ptr, len_to_read, null, &operation.pending_operation.?.overlapped);
+    _ = windows.kernel32.ReadFile(handle, read_file_op.buffer.ptr, len_to_read, null, &operation.pending_operation.?.overlapped);
+
+    var last_err = windows.kernel32.GetLastError();
+    switch (last_err) {
+        .SUCCESS => {
+            operation.pending_operation.?.callback(operation.pending_operation.?.callback_context);
+            operation.pending_operation = null;
+            self.available_operation_slots.appendAssumeCapacity(slot_idx);
+        },
+        .IO_PENDING => {},
+        else => {
+            operation.pending_operation = null;
+            self.available_operation_slots.appendAssumeCapacity(slot_idx);
+            return error.Unexpected;
+        },
+    }
+}
+
+fn writeFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offset: usize, buffer: []u8, callback: *const fn (*anyopaque) void, callback_ctx: *anyopaque) PatchIO.PatchIOErrors!void {
+    var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
+
+    // If there are no slots left we keep ticking until one becomes available.
+    while (self.available_operation_slots.items.len == 0) {
+        implementation.tick(implementation);
+    }
+
+    var slot_idx = self.available_operation_slots.orderedRemove(self.available_operation_slots.items.len - 1);
+    var operation = &self.operation_slots[slot_idx];
+
+    std.debug.assert(operation.pending_operation == null);
+
+    operation.pending_operation = .{
+        .operation = .{
+            .WriteFile = .{
+                .file_info = handle,
+                .offset = @intCast(i64, offset),
+                .buffer = buffer,
+                .io_status_block = undefined,
+            },
+        },
+        .callback = callback,
+        .callback_context = callback_ctx,
+        .overlapped = windows.OVERLAPPED{
+            .Internal = 0,
+            .InternalHigh = 0,
+            .DUMMYUNIONNAME = .{
+                .DUMMYSTRUCTNAME = .{
+                    .Offset = @truncate(u32, offset),
+                    .OffsetHigh = @truncate(u32, offset >> 32),
+                },
+            },
+            .hEvent = null,
+        },
+        .slot_idx = slot_idx,
+    };
+
+    var write_file_op = &operation.pending_operation.?.operation.WriteFile;
+    operation.pending_operation.?.overlapped.hEvent = null;
+
+    var was_successful = windows.kernel32.WriteFile(
+        handle,
+        write_file_op.buffer.ptr,
+        @intCast(u32, write_file_op.buffer.len),
+        null,
+        &operation.pending_operation.?.overlapped,
+    );
+
+    if (was_successful != 0) {
+        operation.pending_operation.?.callback(operation.pending_operation.?.callback_context);
+        operation.pending_operation = null;
+        self.available_operation_slots.appendAssumeCapacity(slot_idx);
+        return;
+    }
 
     var last_err = windows.kernel32.GetLastError();
     switch (last_err) {
@@ -418,6 +499,7 @@ pub fn create(allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.Implem
         .unlock_directory = unlockDirectory,
         .destroy = destroy,
         .read_file = readFile,
+        .write_file = writeFile,
         .tick = tick,
     };
 }

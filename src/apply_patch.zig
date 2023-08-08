@@ -243,7 +243,7 @@ pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: 
     var tasks = try allocator.alloc(ApplyPatchTask, patch.sections.items.len);
     defer allocator.free(tasks);
 
-    var anchored_blocks_map = try AnchoredBlocksMap.init(patch.old.*, allocator);
+    var anchored_blocks_map = try AnchoredBlocksMap.init(patch.old, allocator);
     defer anchored_blocks_map.deinit();
 
     var batch = ThreadPool.Batch{};

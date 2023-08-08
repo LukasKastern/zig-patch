@@ -55,7 +55,8 @@ pub const Implementation = struct {
     lock_directory: *const fn (ImplSelf, []const u8, std.mem.Allocator) PatchIOErrors!LockedDirectory,
     unlock_directory: *const fn (ImplSelf, locked_directory: LockedDirectory) void,
     destroy: *const fn (ImplSelf) void,
-    read_file: *const fn (ImplSelf, FileInfo, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
+    read_file: *const fn (ImplSelf, PlatformHandle, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
+    write_file: *const fn (ImplSelf, PlatformHandle, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
     tick: *const fn (ImplSelf) void,
 };
 
@@ -82,12 +83,16 @@ pub fn unlockDirectory(self: *const Self, locked_dir: LockedDirectory) void {
     return self.impl.unlock_directory(self.impl, locked_dir);
 }
 
-pub fn readFile(self: *Self, file_info: FileInfo, offset: usize, buffer: []u8, callback: *const fn (*anyopaque) void, callback_context: *anyopaque) PatchIOErrors!void {
-    return self.impl.read_file(self.impl, file_info, offset, buffer, callback, callback_context);
+pub fn readFile(self: *Self, handle: PlatformHandle, offset: usize, buffer: []u8, callback: *const fn (*anyopaque) void, callback_context: *anyopaque) PatchIOErrors!void {
+    return self.impl.read_file(self.impl, handle, offset, buffer, callback, callback_context);
 }
 
 pub fn tick(self: *Self) void {
     return self.impl.tick(self.impl);
+}
+
+pub fn writeFile(self: *Self, handle: PlatformHandle, offset: usize, buffer: []u8, callback: *const fn (*anyopaque) void, callback_context: *anyopaque) PatchIOErrors!void {
+    return self.impl.write_file(self.impl, handle, offset, buffer, callback, callback_context);
 }
 
 test "Locking directory should return correct files" {

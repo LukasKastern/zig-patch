@@ -165,12 +165,12 @@ test "deserialized patch header should match original header" {
     defer deserialized_patch_header.new.deinit();
     defer deserialized_patch_header.old.deinit();
 
-    try std.testing.expectEqual(patch_header.old.directories.items.len, deserialized_patch_header.old.directories.items.len);
-    try std.testing.expectEqual(patch_header.old.files.items.len, deserialized_patch_header.old.files.items.len);
+    try std.testing.expectEqual(patch_header.old.numDirectories(), deserialized_patch_header.old.numDirectories());
+    try std.testing.expectEqual(patch_header.old.numFiles(), deserialized_patch_header.old.numFiles());
     try std.testing.expectEqual(patch_header.old.blocks.items.len, deserialized_patch_header.old.blocks.items.len);
 
-    try std.testing.expectEqual(patch_header.new.directories.items.len, deserialized_patch_header.new.directories.items.len);
-    try std.testing.expectEqual(patch_header.new.files.items.len, deserialized_patch_header.new.files.items.len);
+    try std.testing.expectEqual(patch_header.new.numDirectories(), deserialized_patch_header.new.numDirectories());
+    try std.testing.expectEqual(patch_header.new.numFiles(), deserialized_patch_header.new.numFiles());
     try std.testing.expectEqual(patch_header.new.blocks.items.len, deserialized_patch_header.new.blocks.items.len);
 
     try std.testing.expectEqual(patch_header.sections.items.len, deserialized_patch_header.sections.items.len);

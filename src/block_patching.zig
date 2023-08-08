@@ -96,164 +96,170 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
     return patch_operations;
 }
 
-const IncrementalState = struct {
-    is_valid: bool,
-    tail: usize,
-    head: usize,
-    owed_data_tail: usize,
-    rolling_hash: RollingHash,
-    jump_to_next_block: bool,
+pub const GenerateOperationsState = struct {
 
-    // backing_buffer: [BlockSize]u8,
-    // buffer: []u8,
-};
+    // User supplied data for the input of the incremental generation.
+    in_buffer: []u8,
 
-const BlockBuffer = struct {
-    const Self = @This();
+    previous_step_start: usize = 0,
+    previous_step_data_tail: []u8,
+    previous_step_data_tail_backing_buffer: [BlockSize]u8,
 
-    file_start_offset: usize,
-    file_len: usize,
-    buffers: []u8,
+    file_size: usize = 0,
+    tail: usize = 0,
+    head: usize = 0,
+    last_value: u32 = 0,
+    owed_data_tail: usize = 0,
+    rolling_hash: RollingHash = .{},
 
-    pub fn getBlock(self: Self, backing_buffer: []u8, tail: usize, head: usize) ![]u8 {
-        // var read_pos: usize = 0;
+    jump_to_next_block: bool = false,
 
-        var total_buffers_len: usize = 0;
-        for (self.buffers) |buffer| {
-            total_buffers_len += buffer.len;
+    pub fn isDone(state: *const GenerateOperationsState) bool {
+        return state.tail == state.file_size;
+    }
+
+    pub fn prepareForNextIteration(state: *GenerateOperationsState, operations: *std.ArrayList(PatchOperation), allocator: std.mem.Allocator) !void {
+
+        // Emit data op of current owed data tail
+        if (state.tail != state.owed_data_tail) {
+            var new_data_op = try allocator.alloc(u8, state.tail - state.owed_data_tail);
+            state.getFileSlice(state.owed_data_tail, new_data_op) catch unreachable;
+            try operations.append(.{ .Data = new_data_op });
+            state.owed_data_tail = state.tail;
         }
 
-        if (tail < self.file_start_offset) {
-            return error.OutOfRange;
+        // Put the remaining data into the state buffer.
+        const num_remaining_bytes = state.head - state.tail;
+
+        // Adjust the start position by the bytes we processed.
+        state.previous_step_start += state.in_buffer.len - num_remaining_bytes;
+
+        state.previous_step_data_tail = state.previous_step_data_tail_backing_buffer[0..num_remaining_bytes];
+
+        const slice_from_in_buffer = state.in_buffer[state.in_buffer.len -
+            num_remaining_bytes ..];
+
+        std.mem.copy(u8, state.previous_step_data_tail, slice_from_in_buffer);
+        state.in_buffer = &[_]u8{};
+    }
+
+    pub fn init(state: *GenerateOperationsState, file_len: usize) void {
+        state.file_size = file_len;
+        state.tail = 0;
+        state.head = 0;
+        state.owed_data_tail = 0;
+        state.rolling_hash = .{};
+        state.previous_step_start = 0;
+        state.previous_step_data_tail = &[_]u8{};
+        state.in_buffer = &[_]u8{};
+        state.jump_to_next_block = true;
+    }
+
+    pub fn getFileSlice(state: *const GenerateOperationsState, start: usize, out_slice: []u8) !void {
+        const distance_from_prev = start - state.previous_step_start;
+        const bytes_from_prev = @intCast(isize, state.previous_step_data_tail.len) -
+            @intCast(isize, distance_from_prev);
+
+        if (bytes_from_prev > 0) {
+            const prev_data_len = state.previous_step_data_tail.len;
+            const num_bytes_to_copy = std.math.min(@intCast(usize, bytes_from_prev), out_slice.len);
+            const prev_slice_start = prev_data_len - @intCast(usize, bytes_from_prev);
+            const prev_data_slice = state.previous_step_data_tail[prev_slice_start .. prev_slice_start + num_bytes_to_copy];
+            std.mem.copy(u8, out_slice, prev_data_slice);
         }
 
-        if (tail > head) {
-            return error.OutOfRange;
-        }
+        // Take the test of the bytes from the current in_buffer.
+        {
+            const actual_copied_bytes_from_prev = @intCast(usize, std.math.max(bytes_from_prev, 0));
+            const bytes_to_copy = out_slice.len - actual_copied_bytes_from_prev;
 
-        if (head > self.file_start_offset + total_buffers_len) {
-            return error.OutOfRange;
-        }
+            // Start to take bytes from in the current in_buffer
+            const distance_to_current = @intCast(usize, std.math.max(-bytes_from_prev, 0));
 
-        var total_buffer_range = head - tail;
+            // Make sure the in_buffer has enough bytes to fill the out_slice.
+            std.debug.assert(distance_to_current + bytes_to_copy <=
+                state.in_buffer.len);
 
-        if (backing_buffer.len < total_buffer_range) {
-            return error.OutOfRange;
-        }
-
-        var offset_in_buffers: usize = 0;
-        var start_buffer_idx: ?usize = null;
-        for (self.buffers, 0..) |buffer, buffer_idx| {
-            if (tail > offset_in_buffers + self.file_start_offset) {
-                offset_in_buffers += buffer.len;
-                continue;
+            if (distance_to_current + bytes_to_copy > state.in_buffer.len) {
+                return error.MoreDataNeeded;
             }
 
-            start_buffer_idx = buffer_idx;
-            break;
+            var in_buffer_slice = state.in_buffer[distance_to_current .. distance_to_current + bytes_to_copy];
+            std.mem.copy(u8, out_slice[actual_copied_bytes_from_prev..], in_buffer_slice);
         }
-
-        std.debug.assert(start_buffer_idx != null);
-
-        var copied_bytes: usize = 0;
-        for (self.buffers[start_buffer_idx..]) |buffer| {
-            var start: usize = 0;
-            if (copied_bytes == 0) {
-                start = tail - (offset_in_buffers + self.file_start_offset);
-            }
-
-            var num_bytes_to_copy: usize = std.math.min(buffer.len - start, total_buffer_range - copied_bytes);
-
-            std.mem.copy(backing_buffer[copied_bytes..], buffer[start .. start + num_bytes_to_copy]);
-            copied_bytes += num_bytes_to_copy;
-        }
-
-        std.debug.assert(copied_bytes == total_buffer_range);
-        return backing_buffer[0..total_buffer_range];
     }
 };
 
-pub fn generateOperationsForBufferIncremental(state: *IncrementalState, buffers: []u8, first_buffer_offset_in_file: usize, file_len: usize, block_map: AnchoredBlocksMap, max_operation_len: usize, allocator: std.mem.Allocator) !std.ArrayList(PatchOperation) {
-    // const max_operations = @floatToInt(usize, @ceil(@intToFloat(f64, buffer.len) / @intToFloat(f64, BlockSize)));
-    var patch_operations = try std.ArrayList(PatchOperation).initCapacity(allocator, 1);
+pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, state: *GenerateOperationsState, allocator: std.mem.Allocator, max_operation_len: usize) !std.ArrayList(PatchOperation) {
+    const max_operations = @floatToInt(usize, @ceil(@intToFloat(f64, state.in_buffer.len) / @intToFloat(f64, BlockSize))) + 1;
+    var patch_operations = try std.ArrayList(PatchOperation).initCapacity(allocator, max_operations);
 
-    var tail: *usize = &state.tail;
-    var head: *usize = &state.head;
-    var owed_data_tail: *usize = &state.owed_data_tail;
+    var current_block_backing_buffer: [BlockSize]u8 = undefined;
+    var current_block: []u8 = undefined;
 
-    var rolling_hash: *RollingHash = &state.rolling_hash;
+    while (state.tail < state.file_size) {
+        if (state.jump_to_next_block) {
+            var new_head = std.math.min(state.head + BlockSize, state.file_size);
 
-    var jump_to_next_block: *bool = &state.jump_to_next_block;
-
-    // var last_buffer_len: usize = 0;
-
-    if (!state.is_valid) {
-        state.* = .{ .is_valid = true, .tail = 0, .head = 0, .owed_data_tail = 0, .jump_to_next_block = true, .rolling_hash = .{} };
-    }
-
-    if (tail.* < first_buffer_offset_in_file) {
-        return error.InvalidIncrementalState;
-    }
-
-    var buffers_len: usize = buffers.len;
-
-    // var current_block_backing_buffer: *[BlockSize]u8 = &state.backing_buffer;
-    // var current_block: *[]u8 = &state.buffer;
-
-    var process_up_to_this = first_buffer_offset_in_file + buffers_len;
-
-    // var block: [BlockSize]u8 = undefined;
-    // var block_len: usize = 0;
-
-    while (tail.* <= process_up_to_this) {
-        if (jump_to_next_block.*) {
-            var next_block_head = std.math.min(head.* + BlockSize, file_len);
-
-            if (next_block_head > process_up_to_this) {
-                return error.NeedsMoreData;
-            }
-
-            head.* = std.math.min(head.* + BlockSize, file_len);
-
-            if (tail == head) {
+            if (state.tail == new_head) {
                 break;
             }
 
-            // var desired_buffer_size = head - tail;
+            current_block = current_block_backing_buffer[0 .. new_head - state.tail];
+            state.getFileSlice(state.tail, current_block) catch |e| {
+                switch (e) {
+                    error.MoreDataNeeded => {
+                        try state.prepareForNextIteration(&patch_operations, allocator);
+                        return patch_operations;
+                    },
+                }
+            };
 
-            // block_len = 0;
+            state.head = new_head;
 
-            // if (tail < first_buffer_offset_in_file) {
-            //     var num_byte_from_previous_buffer = tail - first_buffer_offset_in_file;
-            //     block_len = num_byte_from_previous_buffer;
-            //     std.mem.copy(block[block_len..], state.buffer[BlockSize - num_byte_from_previous_buffer ..]);
-            // }
+            state.rolling_hash.recompute(current_block);
 
-            // std.mem.copy(block[block_len..], state.buffer[desired_buffer_size - block_len]);
-
-            // std.debug.assert(desired_buffer_size == block_len);
-
-            // rolling_hash.recompute(block[0..block_len]);
-            jump_to_next_block.* = false;
+            state.jump_to_next_block = false;
         } else {
-            // rolling_hash.next(buffer, tail - 1, head - 1);
+            current_block = current_block_backing_buffer[0 .. state.head - state.tail];
+            state.getFileSlice(state.tail, current_block) catch |e| {
+                switch (e) {
+                    error.MoreDataNeeded => {
+                        try state.prepareForNextIteration(&patch_operations, allocator);
+                        return patch_operations;
+                    },
+                }
+            };
+
+            const distance = state.head - state.tail;
+            const last_value = state.last_value;
+
+            const new_value = if (current_block.len > 0) current_block[current_block.len - 1] else 0;
+            //TODO: Make this incremental again.
+            state.rolling_hash.nextImpl(@intCast(u32, last_value), new_value, distance);
+
+            // rolling_hash.next(current_block, tail - 1, head - 1);
         }
 
-        std.debug.assert(head.* - tail.* <= BlockSize);
+        std.debug.assert(current_block.len > 0);
+        std.debug.assert(state.head - state.tail <= BlockSize);
 
-        var hash = rolling_hash.hash;
+        var hash = state.rolling_hash.hash;
 
         var known_block: ?AnchoredBlock = null;
 
         if (block_map.hasAnchoredBlocksForWeakHash(hash)) {
-            @setRuntimeSafety(false);
+            // @setRuntimeSafety(false);
             // Hash found. Calculate MD5 and see if we match with a known block.
 
-            var block_hash: BlockHash = .{ .weak_hash = hash, .strong_hash = undefined };
+            var block_hash: BlockHash = .{
+                .weak_hash = hash,
+                .strong_hash = undefined,
+            };
 
-            // std.crypto.hash.Md5.hash(buffer[tail..head], &block_hash.strong_hash, .{});
+            std.crypto.hash.Md5.hash(current_block, &block_hash.strong_hash, .{});
 
-            var block_size = head.* - tail.*;
+            var block_size = state.head - state.tail;
             var short_size = BlockSize - block_size;
 
             //TODO: Add the preferred file idx here (lukas)
@@ -261,33 +267,53 @@ pub fn generateOperationsForBufferIncremental(state: *IncrementalState, buffers:
         }
 
         if (known_block) |block| {
-            if (tail.* != owed_data_tail.*) {
-                // try patch_operations.append(.{ .Data = buffer[owed_data_tail..tail] });
-                // std.log.err("Appending OwedTail {}:{}", .{ owed_data_tail, tail });
+            if (state.tail != state.owed_data_tail) {
+                var new_data_op = try allocator.alloc(u8, state.tail - state.owed_data_tail);
+                state.getFileSlice(state.owed_data_tail, new_data_op) catch unreachable;
+
+                try patch_operations.append(.{ .Data = new_data_op });
             }
 
             //TODO: Check if last operation is the same. If so merge span. (lukas)
-            try patch_operations.append(.{ .BlockRange = .{ .file_index = block.file_index, .block_index = block.block_index, .block_span = 1 } });
+            try patch_operations.append(.{
+                .BlockRange = .{
+                    .file_index = block.file_index,
+                    .block_index = block.block_index,
+                    .block_span = 1,
+                },
+            });
 
-            owed_data_tail.* = head.*;
-            tail.* = head.*;
-            jump_to_next_block.* = true;
+            state.owed_data_tail = state.head;
+            state.tail = state.head;
+            state.jump_to_next_block = true;
         } else {
-            tail.* += 1;
-            // head = std.math.min(head + 1, buffer.len);
-            const reached_end_of_buffer = tail.* == head.*;
-            const can_omit_data_op = owed_data_tail.* != tail.*;
-            const needs_to_omit_data_op = reached_end_of_buffer or (tail.* - owed_data_tail.* >= max_operation_len);
+            const reached_end_of_buffer = state.tail == state.head;
+            const can_omit_data_op = state.owed_data_tail != state.tail;
+            const needs_to_omit_data_op = reached_end_of_buffer or (state.tail - state.owed_data_tail >= max_operation_len);
 
             if (can_omit_data_op and needs_to_omit_data_op) {
-                // var slice = buffer[owed_data_tail..tail];
+                var new_data_op = try allocator.alloc(u8, state.tail - state.owed_data_tail);
+                state.getFileSlice(state.owed_data_tail, new_data_op) catch unreachable;
 
-                // try patch_operations.append(.{ .Data = slice });
+                try patch_operations.append(.{ .Data = new_data_op });
 
                 // std.log.err("Appending Block {}:{}", .{ owed_data_tail, tail });
-                owed_data_tail = tail;
+                state.owed_data_tail = state.tail;
             }
+
+            // Step to next byte.
+            state.last_value = current_block[0];
+            state.tail += 1;
+            state.head = std.math.min(state.head + 1, state.file_size);
         }
+    }
+
+    if (state.owed_data_tail != state.tail) {
+        var new_data_op = try allocator.alloc(u8, state.tail - state.owed_data_tail);
+        state.getFileSlice(state.owed_data_tail, new_data_op) catch unreachable;
+
+        try patch_operations.append(.{ .Data = new_data_op });
+        state.owed_data_tail = state.tail;
     }
 
     return patch_operations;
@@ -367,9 +393,9 @@ test "Operations for buffer without Reference should rebuild the original buffer
 
     try std.testing.expect(operations.items.len > 0);
     for (operations.items) |operation| {
-    try std.testing.expect(operation == .Data);
-    std.mem.copy(u8, rebuilt_buffer[offset..], operation.Data);
-    offset += operation.Data.len;
+        try std.testing.expect(operation == .Data);
+        std.mem.copy(u8, rebuilt_buffer[offset..], operation.Data);
+        offset += operation.Data.len;
     }
 
     try std.testing.expectEqualSlices(u8, original_buffer, rebuilt_buffer);

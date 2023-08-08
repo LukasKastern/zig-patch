@@ -270,8 +270,11 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
         var patch_io = try PatchIO.init(allocator);
         defer patch_io.deinit();
 
+        var src_folder_temp_buffer: [1024]u8 = undefined;
+        var abs_src_folder_path = try cwd.realpath(source_folder_path, &src_folder_temp_buffer);
+
         var generate_signature_start_sample = timer.read();
-        try new_signature_file.generateFromFolder(source_folder_path, thread_pool, config.progress_callback, &patch_io);
+        try new_signature_file.generateFromFolder(abs_src_folder_path, thread_pool, config.progress_callback, &patch_io);
         var generate_signature_finish_sample = timer.read();
 
         std.log.info("Generated Signature in {d:2}ms", .{(@intToFloat(f64, generate_signature_finish_sample) - @intToFloat(f64, generate_signature_start_sample)) / 1000000});
