@@ -92,7 +92,7 @@ available_operation_slots: std.ArrayList(usize),
 completion_port: windows.HANDLE,
 
 pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []const u8, allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.LockedDirectory {
-    var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
+    var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
 
     var locked_dir: PatchIO.LockedDirectory = .{
         .path_buffer = undefined,
@@ -166,10 +166,10 @@ pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []
                     var offset: usize = 0;
 
                     file_iteration: while (true) {
-                        var file_info = @ptrCast(*std.os.windows.FILE_DIRECTORY_INFORMATION, @alignCast(@alignOf(*std.os.windows.FILE_DIRECTORY_INFORMATION), &file_information_buf[offset]));
+                        var file_info = @as(*std.os.windows.FILE_DIRECTORY_INFORMATION, @ptrCast(@alignCast(&file_information_buf[offset])));
                         offset += file_info.NextEntryOffset;
 
-                        var file_name = @ptrCast([*]u16, &file_info.FileName)[0 .. file_info.FileNameLength / 2];
+                        var file_name = @as([*]u16, @ptrCast(&file_info.FileName))[0 .. file_info.FileNameLength / 2];
 
                         var is_standard_directory = false;
 
@@ -195,12 +195,12 @@ pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []
 
                             std.mem.copy(u8, path_buffer[path_buffer_offset..], file_name_buffer[0..end_idx]);
                             var prev_offset = path_buffer_offset;
-                            path_buffer_offset += @intCast(u32, end_idx);
+                            path_buffer_offset += @as(u32, @intCast(end_idx));
 
                             var is_directory = file_info.FileAttributes & windows.FILE_ATTRIBUTE_DIRECTORY != 0;
                             var nt_name = windows.UNICODE_STRING{
-                                .Length = @intCast(c_ushort, file_info.FileNameLength),
-                                .MaximumLength = @intCast(c_ushort, file_info.FileNameLength),
+                                .Length = @as(c_ushort, @intCast(file_info.FileNameLength)),
+                                .MaximumLength = @as(c_ushort, @intCast(file_info.FileNameLength)),
                                 .Buffer = file_name.ptr,
                             };
                             var attr = windows.OBJECT_ATTRIBUTES{
@@ -238,19 +238,19 @@ pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []
                             }
 
                             if (is_directory) {
-                                try directories_to_query.append(.{ .handle = file_handle, .path_offset = prev_offset, .path_len = @intCast(u32, end_idx) });
+                                try directories_to_query.append(.{ .handle = file_handle, .path_offset = prev_offset, .path_len = @as(u32, @intCast(end_idx)) });
 
                                 try locked_dir.directories.append(.{
                                     .handle = file_handle,
                                     .path_offset = prev_offset,
-                                    .path_len = @intCast(u32, end_idx),
+                                    .path_len = @as(u32, @intCast(end_idx)),
                                 });
                             } else {
                                 try locked_dir.files.append(.{
                                     .handle = file_handle,
                                     .path_offset = prev_offset,
-                                    .path_len = @intCast(u32, end_idx),
-                                    .size = @intCast(u64, file_info.EndOfFile),
+                                    .path_len = @as(u32, @intCast(end_idx)),
+                                    .size = @as(u64, @intCast(file_info.EndOfFile)),
                                 });
                             }
                         }
@@ -293,7 +293,7 @@ fn unlockDirectory(implementation: PatchIO.Implementation, locked_directory: Pat
 }
 
 fn destroy(implementation: PatchIO.Implementation) void {
-    var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
+    var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
 
     self.available_operation_slots.deinit();
 
@@ -301,7 +301,7 @@ fn destroy(implementation: PatchIO.Implementation) void {
 }
 
 fn readFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offset: usize, buffer: []u8, callback: *const fn (*anyopaque) void, callback_ctx: *anyopaque) PatchIO.PatchIOErrors!void {
-    var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
+    var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
 
     // If there are no slots left we keep ticking until one becomes available.
     while (self.available_operation_slots.items.len == 0) {
@@ -317,7 +317,7 @@ fn readFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offs
         .operation = .{
             .ReadFile = .{
                 .file_info = handle,
-                .offset = @intCast(i64, offset),
+                .offset = @as(i64, @intCast(offset)),
                 .buffer = buffer,
                 .io_status_block = undefined,
             },
@@ -329,8 +329,8 @@ fn readFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offs
             .InternalHigh = 0,
             .DUMMYUNIONNAME = .{
                 .DUMMYSTRUCTNAME = .{
-                    .Offset = @truncate(u32, offset),
-                    .OffsetHigh = @truncate(u32, offset >> 32),
+                    .Offset = @as(u32, @truncate(offset)),
+                    .OffsetHigh = @as(u32, @truncate(offset >> 32)),
                 },
             },
             .hEvent = null,
@@ -358,7 +358,7 @@ fn readFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offs
 
     // var success =  kernel32_extra.ReadFileEx(file_info.handle, read_file_op.buffer.ptr, @intCast(u32, read_file_op.buffer.len), &read_file_op.overlapped, IOCompletedCallback.overlappedCallback);
 
-    var len_to_read = @intCast(u32, read_file_op.buffer.len);
+    var len_to_read = @as(u32, @intCast(read_file_op.buffer.len));
 
     if (len_to_read % 512 != 0) {
         len_to_read += (512 - len_to_read % 512);
@@ -383,7 +383,7 @@ fn readFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offs
 }
 
 fn writeFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offset: usize, buffer: []u8, callback: *const fn (*anyopaque) void, callback_ctx: *anyopaque) PatchIO.PatchIOErrors!void {
-    var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
+    var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
 
     // If there are no slots left we keep ticking until one becomes available.
     while (self.available_operation_slots.items.len == 0) {
@@ -399,7 +399,7 @@ fn writeFile(implementation: PatchIO.Implementation, handle: PlatformHandle, off
         .operation = .{
             .WriteFile = .{
                 .file_info = handle,
-                .offset = @intCast(i64, offset),
+                .offset = @as(i64, @intCast(offset)),
                 .buffer = buffer,
                 .io_status_block = undefined,
             },
@@ -411,8 +411,8 @@ fn writeFile(implementation: PatchIO.Implementation, handle: PlatformHandle, off
             .InternalHigh = 0,
             .DUMMYUNIONNAME = .{
                 .DUMMYSTRUCTNAME = .{
-                    .Offset = @truncate(u32, offset),
-                    .OffsetHigh = @truncate(u32, offset >> 32),
+                    .Offset = @as(u32, @truncate(offset)),
+                    .OffsetHigh = @as(u32, @truncate(offset >> 32)),
                 },
             },
             .hEvent = null,
@@ -426,7 +426,7 @@ fn writeFile(implementation: PatchIO.Implementation, handle: PlatformHandle, off
     var was_successful = windows.kernel32.WriteFile(
         handle,
         write_file_op.buffer.ptr,
-        @intCast(u32, write_file_op.buffer.len),
+        @as(u32, @intCast(write_file_op.buffer.len)),
         null,
         &operation.pending_operation.?.overlapped,
     );
@@ -455,7 +455,7 @@ fn writeFile(implementation: PatchIO.Implementation, handle: PlatformHandle, off
 }
 
 fn tick(implementation: PatchIO.Implementation) void {
-    var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), implementation.instance_data));
+    var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
 
     var entries: [64]windows.OVERLAPPED_ENTRY = undefined;
     var num_entries_removed: u32 = 0;

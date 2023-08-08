@@ -108,7 +108,7 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         fn onMakeSignatureProgress(print_helper_opaque: *anyopaque, progress: f32, progress_str: ?[]const u8) void {
             const stdout = std.io.getStdErr().writer();
 
-            var print_helper = @ptrCast(*Self, @alignCast(@alignOf(*Self), print_helper_opaque));
+            var print_helper = @as(*Self, @ptrCast(@alignCast(print_helper_opaque)));
 
             const progress_str_to_state = [_][]const u8{ "", "Hashing Blocks", "Generating Patches", "Assembling Patch" };
 
@@ -117,7 +117,7 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
 
                 inline for (progress_str_to_state, 0..) |state_progress_str, idx| {
                     if (std.mem.eql(u8, state_progress_str, progress_str_value)) {
-                        new_state = @intToEnum(CreatePatchState, idx);
+                        new_state = @as(CreatePatchState, @enumFromInt(idx));
                     }
                 }
 
@@ -160,19 +160,19 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
 
     var total_blocks = if (create_patch_stats.total_blocks == 0) 1 else create_patch_stats.total_blocks;
 
-    var changed_blocks_percentage = @intToFloat(f64, create_patch_stats.changed_blocks) / @intToFloat(f64, total_blocks) * 100;
+    var changed_blocks_percentage = @as(f64, @floatFromInt(create_patch_stats.changed_blocks)) / @as(f64, @floatFromInt(total_blocks)) * 100;
 
     _ = changed_blocks_percentage;
     {
         const stdout = std.io.getStdErr().writer();
 
-        const new_bytes_percentage = @intToFloat(f32, create_patch_stats.num_new_bytes) / @intToFloat(f32, create_patch_stats.total_signature_folder_size_bytes);
+        const new_bytes_percentage = @as(f32, @floatFromInt(create_patch_stats.num_new_bytes)) / @as(f32, @floatFromInt(create_patch_stats.total_signature_folder_size_bytes));
         const reused_percentage = 1.0 - new_bytes_percentage;
 
-        var new_data_size_MiB = @intToFloat(f32, create_patch_stats.num_new_bytes) / bytes_to_MiB;
+        var new_data_size_MiB = @as(f32, @floatFromInt(create_patch_stats.num_new_bytes)) / bytes_to_MiB;
 
-        var total_patch_size_MiB = @intToFloat(f32, create_patch_stats.total_patch_size_bytes) / bytes_to_MiB;
-        var percentage_of_full_size = @intToFloat(f32, create_patch_stats.total_patch_size_bytes) / @intToFloat(f32, create_patch_stats.total_signature_folder_size_bytes);
+        var total_patch_size_MiB = @as(f32, @floatFromInt(create_patch_stats.total_patch_size_bytes)) / bytes_to_MiB;
+        var percentage_of_full_size = @as(f32, @floatFromInt(create_patch_stats.total_patch_size_bytes)) / @as(f32, @floatFromInt(create_patch_stats.total_signature_folder_size_bytes));
 
         stdout.print("\r√ Re-used {d:.2}% of old, added {d:.2} MiB fresh data\n", .{ reused_percentage * 100, new_data_size_MiB }) catch {};
 
@@ -324,7 +324,7 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
 
         var make_signature_stats = operation_stats.make_signature_stats.?;
 
-        var folder_size_GiB = @intToFloat(f32, make_signature_stats.total_signature_folder_size_bytes) / 1_073_741_824.0;
+        var folder_size_GiB = @as(f32, @floatFromInt(make_signature_stats.total_signature_folder_size_bytes)) / 1_073_741_824.0;
 
         stdout.print("\r√ {d:.2}GiB ({} files, {} directories) @ {d:.2}GiB/s            \n", .{ folder_size_GiB, make_signature_stats.num_files, make_signature_stats.num_directories, operation_stats.total_operation_time / std.time.ms_per_s }) catch {};
     }

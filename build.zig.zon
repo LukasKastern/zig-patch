@@ -1,19 +1,19 @@
 .{
-    .name = "wharf-zig",
+    .name = "zig-patch",
     .version = "0.1.0",
 
     .dependencies = .{
         .zig_clap = .{
-            .url = "https://github.com/LukasKastern/zig-clap/archive/deb5febe8c4f2d6606e3011961eacc6374cb3741.tar.gz",
-            .hash = "1220ec0e9b0631502e29bfb309f0c1a4497e0ba62b0512723f777da63a92f8903cc5",
+            .url = "https://github.com/LukasKastern/zig-clap/archive/2a85f565b75d94b92472d42b4350313bd3f6046a.tar.gz",
+            .hash = "1220aa608ac0b0876118a95220a3b91a800e68e3840c39aef766c9ab4b330da5e934",           
         },
         .brotli = .{
-            .url = "https://github.com/LukasKastern/brotli/archive/e0412e611d3ce3b28580d4dbd83579f36bf15ee0.tar.gz",
-            .hash = "12207bb6724a6e1212a3a8a19302b495af7e18ea701690f9f21c19519f457517960c",
+            .url = "https://github.com/LukasKastern/brotli/archive/553d70b890a633d1bb6609d4465bd977e382212f.tar.gz",
+            .hash = "12202d329ebdbe10faf1e78dd13185e1973f4954e0dcc3fc8eb8fd3165ad2466236d",
         },
         .zlib = .{
-            .url = "https://github.com/lukaskastern/zig-zlib/archive/15dadc647fda6458120e1b9dcdd03cd5c541f681.tar.gz",    
-            .hash = "1220c81b7707c3cc229a14afe0ba0784b996c346639a3215f0777360e70690ffd3e2",        
+            .url = "https://github.com/andrewrk/libz/archive/8bf2a1c61b87773131bee2086737b5f02b7c0888.tar.gz",
+            .hash = "12209e851f7e2c6ba2f01de3e11b1771f03e49666065320abd8414aac152bfa75fae",
         },
     },
 }

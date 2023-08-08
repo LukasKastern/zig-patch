@@ -118,7 +118,7 @@ const ApplyPatchTask = struct {
 
         var operations_buffer = self.per_thread_operations_buffer[ThreadPool.Thread.current.?.idx];
 
-        var num_patch_sections = @floatToInt(usize, @ceil(@intToFloat(f64, self.file.size) / @intToFloat(f64, PatchGeneration.DefaultMaxWorkUnitSize)));
+        var num_patch_sections = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(self.file.size)) / @as(f64, @floatFromInt(PatchGeneration.DefaultMaxWorkUnitSize)))));
 
         var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(operations_buffer);
 
@@ -282,7 +282,7 @@ pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: 
     var num_sections_remaining = sections_remaining.load(.Acquire);
     while (num_sections_remaining != 0 and are_sections_done.load(.Acquire) == 0) {
         if (progress_callback) |progress_callback_unwrapped| {
-            var elapsed_progress = (1.0 - @intToFloat(f32, num_sections_remaining) / @intToFloat(f32, patch.sections.items.len)) * 100;
+            var elapsed_progress = (1.0 - @as(f32, @floatFromInt(num_sections_remaining)) / @as(f32, @floatFromInt(patch.sections.items.len))) * 100;
             progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Merging Patch Sections");
         }
 

@@ -13,7 +13,7 @@ const BrotliAllocator = struct {
 
     pub export fn alloc_brotli(self_opaque: ?*anyopaque, size: usize) ?*anyopaque {
         if (self_opaque) |self_opaque_safe| {
-            var self = @ptrCast(*Self, @alignCast(@alignOf(Self), self_opaque_safe));
+            var self = @as(*Self, @ptrCast(@alignCast(self_opaque_safe)));
 
             // We add the size of the allocation as a header to it.
             // That way we can rebuild the slice when trying to free the memory later.
@@ -22,7 +22,7 @@ const BrotliAllocator = struct {
                 return null;
             };
 
-            var allocation_size = @ptrCast(*usize, @alignCast(@alignOf(usize), data.ptr));
+            var allocation_size = @as(*usize, @ptrCast(@alignCast(data.ptr)));
             allocation_size.* = size;
 
             return data.ptr + @sizeOf(usize);
@@ -37,14 +37,14 @@ const BrotliAllocator = struct {
             return;
         }
 
-        var ptr_u8 = @ptrCast([*]u8, @alignCast(@alignOf(u8), ptr.?));
+        var ptr_u8 = @as([*]u8, @ptrCast(@alignCast(ptr.?)));
         var ptr_beginning_of_size = ptr_u8 - @sizeOf(usize);
-        var allocation_size = @ptrCast(*usize, @alignCast(@alignOf(usize), ptr_beginning_of_size));
+        var allocation_size = @as(*usize, @ptrCast(@alignCast(ptr_beginning_of_size)));
 
-        var slice = ptr_beginning_of_size[0..(allocation_size.* + @sizeOf(usize))];
+        var slice: []align(@alignOf(usize)) u8 = @alignCast(ptr_beginning_of_size[0..(allocation_size.* + @sizeOf(usize))]);
 
         if (self_opaque) |self_opaque_safe| {
-            var self = @ptrCast(*Self, @alignCast(@alignOf(*Self), self_opaque_safe));
+            var self = @as(*Self, @ptrCast(@alignCast(self_opaque_safe)));
             self.backing_allocator.free(slice);
         }
     }
@@ -76,11 +76,11 @@ pub const BrotliCompression = struct {
             deflate.allocator = allocator;
 
             var window_bits = brotli.BROTLI_DEFAULT_WINDOW;
-            var mode = @intCast(c_uint, brotli.BROTLI_DEFAULT_MODE);
+            var mode = @as(c_uint, @intCast(brotli.BROTLI_DEFAULT_MODE));
             var quality: usize = 4;
 
-            _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_LGWIN, @intCast(u32, window_bits));
-            _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_QUALITY, @intCast(u32, quality));
+            _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_LGWIN, @as(u32, @intCast(window_bits)));
+            _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_QUALITY, @as(u32, @intCast(quality)));
             _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_MODE, mode);
 
             return deflate;
@@ -95,11 +95,11 @@ pub const BrotliCompression = struct {
             var deflate = @fieldParentPtr(BrotliDeflate, "compression_impl", impl);
 
             var available_in = input.len;
-            var next_in = @ptrCast([*c]u8, input.ptr);
+            var next_in = @as([*c]u8, @ptrCast(input.ptr));
             var available_out = output.len;
-            var next_out = @ptrCast([*c]u8, output.ptr);
+            var next_out = @as([*c]u8, @ptrCast(output.ptr));
             var total_out: usize = 0;
-            _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_SIZE_HINT, @intCast(u32, input.len));
+            _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_SIZE_HINT, @as(u32, @intCast(input.len)));
 
             var result = brotli.BrotliEncoderCompressStream(deflate.encoder_instance, brotli.BROTLI_OPERATION_FINISH, &available_in, &next_in, &available_out, &next_out, &total_out);
 
@@ -149,9 +149,9 @@ pub const BrotliCompression = struct {
 
             var total_out: usize = 0;
             var available_in = input.len;
-            var next_in = @ptrCast([*c]u8, input.ptr);
+            var next_in = @as([*c]u8, @ptrCast(input.ptr));
             var available_out = output.len;
-            var next_out = @ptrCast([*c]u8, output.ptr);
+            var next_out = @as([*c]u8, @ptrCast(output.ptr));
 
             var decompress_result = brotli.BrotliDecoderDecompressStream(inflate_impl.decoder_instance, &available_in, &next_in, &available_out, &next_out, &total_out);
 

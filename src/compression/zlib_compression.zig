@@ -12,7 +12,7 @@ const ZlibAllocator = struct {
 
     pub export fn allocZlib(self_opaque: ?*anyopaque, items: c_uint, size: c_uint) ?*anyopaque {
         if (self_opaque) |self_opaque_safe| {
-            var self = @ptrCast(*Self, @alignCast(@alignOf(Self), self_opaque_safe));
+            var self = @as(*Self, @ptrCast(@alignCast(self_opaque_safe)));
 
             var size_to_alloc = items * size;
 
@@ -23,7 +23,7 @@ const ZlibAllocator = struct {
                 return null;
             };
 
-            var allocation_size = @ptrCast(*usize, @alignCast(@alignOf(usize), data.ptr));
+            var allocation_size = @as(*usize, @ptrCast(@alignCast(data.ptr)));
             allocation_size.* = size_to_alloc;
 
             return data.ptr + @sizeOf(usize);
@@ -38,14 +38,14 @@ const ZlibAllocator = struct {
             return;
         }
 
-        var ptr_u8 = @ptrCast([*]u8, @alignCast(@alignOf(u8), ptr.?));
+        var ptr_u8 = @as([*]u8, @ptrCast(@alignCast(ptr.?)));
         var ptr_beginning_of_size = ptr_u8 - @sizeOf(usize);
-        var allocation_size = @ptrCast(*usize, @alignCast(@alignOf(usize), ptr_beginning_of_size));
+        var allocation_size = @as(*usize, @ptrCast(@alignCast(ptr_beginning_of_size)));
 
         var slice = ptr_beginning_of_size[0..(allocation_size.* + @sizeOf(usize))];
 
         if (self_opaque) |self_opaque_safe| {
-            var self = @ptrCast(*Self, @alignCast(@alignOf(Self), self_opaque_safe));
+            var self = @as(*Self, @ptrCast(@alignCast(self_opaque_safe)));
             self.backing_allocator.free(slice);
         }
     }

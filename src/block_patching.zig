@@ -18,7 +18,7 @@ pub const BlockRangeOperation = struct {
 pub const PatchOperation = union(enum) { Invalid: void, BlockRange: BlockRangeOperation, Data: []u8 };
 
 pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, max_operation_len: usize, allocator: std.mem.Allocator) !std.ArrayList(PatchOperation) {
-    const max_operations = @floatToInt(usize, @ceil(@intToFloat(f64, buffer.len) / @intToFloat(f64, BlockSize)));
+    const max_operations = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(buffer.len)) / @as(f64, @floatFromInt(BlockSize)))));
     var patch_operations = try std.ArrayList(PatchOperation).initCapacity(allocator, max_operations);
 
     var tail: usize = 0;
@@ -31,7 +31,7 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
 
     while (tail <= buffer.len) {
         if (jump_to_next_block) {
-            head = std.math.min(head + BlockSize, buffer.len);
+            head = @min(head + BlockSize, buffer.len);
 
             if (tail == head) {
                 break;
@@ -77,7 +77,7 @@ pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, m
             jump_to_next_block = true;
         } else {
             tail += 1;
-            head = std.math.min(head + 1, buffer.len);
+            head = @min(head + 1, buffer.len);
             const reached_end_of_buffer = tail == head;
             const can_omit_data_op = owed_data_tail != tail;
             const needs_to_omit_data_op = reached_end_of_buffer or (tail - owed_data_tail >= max_operation_len);
@@ -157,24 +157,24 @@ pub const GenerateOperationsState = struct {
 
     pub fn getFileSlice(state: *const GenerateOperationsState, start: usize, out_slice: []u8) !void {
         const distance_from_prev = start - state.previous_step_start;
-        const bytes_from_prev = @intCast(isize, state.previous_step_data_tail.len) -
-            @intCast(isize, distance_from_prev);
+        const bytes_from_prev = @as(isize, @intCast(state.previous_step_data_tail.len)) -
+            @as(isize, @intCast(distance_from_prev));
 
         if (bytes_from_prev > 0) {
             const prev_data_len = state.previous_step_data_tail.len;
-            const num_bytes_to_copy = std.math.min(@intCast(usize, bytes_from_prev), out_slice.len);
-            const prev_slice_start = prev_data_len - @intCast(usize, bytes_from_prev);
+            const num_bytes_to_copy = @min(@as(usize, @intCast(bytes_from_prev)), out_slice.len);
+            const prev_slice_start = prev_data_len - @as(usize, @intCast(bytes_from_prev));
             const prev_data_slice = state.previous_step_data_tail[prev_slice_start .. prev_slice_start + num_bytes_to_copy];
             std.mem.copy(u8, out_slice, prev_data_slice);
         }
 
         // Take the test of the bytes from the current in_buffer.
         {
-            const actual_copied_bytes_from_prev = @intCast(usize, std.math.max(bytes_from_prev, 0));
+            const actual_copied_bytes_from_prev = @as(usize, @intCast(@max(bytes_from_prev, 0)));
             const bytes_to_copy = out_slice.len - actual_copied_bytes_from_prev;
 
             // Start to take bytes from in the current in_buffer
-            const distance_to_current = @intCast(usize, std.math.max(-bytes_from_prev, 0));
+            const distance_to_current = @as(usize, @intCast(@max(-bytes_from_prev, 0)));
 
             // Make sure the in_buffer has enough bytes to fill the out_slice.
             std.debug.assert(distance_to_current + bytes_to_copy <=
@@ -191,7 +191,7 @@ pub const GenerateOperationsState = struct {
 };
 
 pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, state: *GenerateOperationsState, allocator: std.mem.Allocator, max_operation_len: usize) !std.ArrayList(PatchOperation) {
-    const max_operations = @floatToInt(usize, @ceil(@intToFloat(f64, state.in_buffer.len) / @intToFloat(f64, BlockSize))) + 1;
+    const max_operations = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(state.in_buffer.len)) / @as(f64, @floatFromInt(BlockSize))))) + 1;
     var patch_operations = try std.ArrayList(PatchOperation).initCapacity(allocator, max_operations);
 
     var current_block_backing_buffer: [BlockSize]u8 = undefined;
@@ -199,7 +199,7 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
 
     while (state.tail < state.file_size) {
         if (state.jump_to_next_block) {
-            var new_head = std.math.min(state.head + BlockSize, state.file_size);
+            var new_head = @min(state.head + BlockSize, state.file_size);
 
             if (state.tail == new_head) {
                 break;
@@ -236,7 +236,7 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
 
             const new_value = if (current_block.len > 0) current_block[current_block.len - 1] else 0;
             //TODO: Make this incremental again.
-            state.rolling_hash.nextImpl(@intCast(u32, last_value), new_value, distance);
+            state.rolling_hash.nextImpl(@as(u32, @intCast(last_value)), new_value, distance);
 
             // rolling_hash.next(current_block, tail - 1, head - 1);
         }
@@ -304,7 +304,7 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
             // Step to next byte.
             state.last_value = current_block[0];
             state.tail += 1;
-            state.head = std.math.min(state.head + 1, state.file_size);
+            state.head = @min(state.head + 1, state.file_size);
         }
     }
 
@@ -364,7 +364,7 @@ test "Test Block buffer" {}
 test "Operations for buffer without Reference should rebuild the original buffer" {
     const max_operation_len: usize = 512;
 
-    const buffer_size = @trunc(@intToFloat(f64, max_operation_len) * 1);
+    const buffer_size = @trunc(@as(f64, @floatFromInt(max_operation_len)) * 1);
     var original_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
     defer std.testing.allocator.free(original_buffer);
 
@@ -404,7 +404,7 @@ test "Operations for buffer without Reference should rebuild the original buffer
 test "Operations for buffer without Reference should rebuild the original buffer - with fractional buffer size of max operation length" {
     const max_operation_len: usize = 512;
 
-    const buffer_size = @trunc(@intToFloat(f64, max_operation_len) * 3.564);
+    const buffer_size = @trunc(@as(f64, @floatFromInt(max_operation_len)) * 3.564);
     var original_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
     defer std.testing.allocator.free(original_buffer);
 

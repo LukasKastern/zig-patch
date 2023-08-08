@@ -162,7 +162,7 @@ pub const SignatureFile = struct {
                 const block_start_idx_in_buffer = processed_blocks * BlockSize;
                 var remaining_bytes = self.read_bytes - block_start_idx_in_buffer;
 
-                var block_data = self.buffer[block_start_idx_in_buffer .. block_start_idx_in_buffer + std.math.min(BlockSize, remaining_bytes)];
+                var block_data = self.buffer[block_start_idx_in_buffer .. block_start_idx_in_buffer + @min(BlockSize, remaining_bytes)];
 
                 var rolling_hash: RollingHash = .{};
                 rolling_hash.recompute(block_data);
@@ -207,7 +207,7 @@ pub const SignatureFile = struct {
                 continue;
             }
 
-            var blocks_in_file = @floatToInt(usize, @ceil(@intToFloat(f64, signature_file.size) / BlockSize));
+            var blocks_in_file = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(signature_file.size)) / BlockSize)));
             num_blocks += blocks_in_file;
 
             num_total_read_batches += signature_file.size / read_buffer_size;
@@ -267,7 +267,7 @@ pub const SignatureFile = struct {
 
         const IOCallbackWrapper = struct {
             pub fn onReadComplete(ctx: *anyopaque) void {
-                var read_buffer = @ptrCast(*ReadBuffer, @alignCast(@alignOf(*ReadBuffer), ctx));
+                var read_buffer = @as(*ReadBuffer, @ptrCast(@alignCast(ctx)));
 
                 const bytes_per_worker = CalculateHashData.BlocksPerBatchOfWork * BlockSize;
                 var num_batches_to_schedule = read_buffer.read_len / bytes_per_worker;
@@ -281,7 +281,7 @@ pub const SignatureFile = struct {
                 var remaining_bytes = read_buffer.read_len;
 
                 for (read_buffer.tasks[0..num_batches_to_schedule]) |*task| {
-                    task.read_bytes = std.math.min(remaining_bytes, bytes_per_worker);
+                    task.read_bytes = @min(remaining_bytes, bytes_per_worker);
 
                     if (remaining_bytes >= bytes_per_worker) {
                         remaining_bytes -= bytes_per_worker;
@@ -292,7 +292,7 @@ pub const SignatureFile = struct {
                 }
 
                 read_buffer.is_calculating_hashes = true;
-                read_buffer.remaining_workers.store(@intCast(u32, num_batches_to_schedule), .Monotonic);
+                read_buffer.remaining_workers.store(@as(u32, @intCast(num_batches_to_schedule)), .Monotonic);
                 read_buffer.thread_pool.schedule(batch);
             }
         };
@@ -304,7 +304,7 @@ pub const SignatureFile = struct {
                 var read_buffer_idx = available_read_buffers.orderedRemove(available_read_buffers.items.len - 1);
                 var read_buffer = &read_buffers.items[read_buffer_idx];
 
-                if (@intCast(usize, batch_in_file) * read_buffer_size >= locked_folder.files.items[file_idx].size) {
+                if (@as(usize, @intCast(batch_in_file)) * read_buffer_size >= locked_folder.files.items[file_idx].size) {
                     file_idx += 1;
                     batch_in_file = 0;
                 }
@@ -315,8 +315,8 @@ pub const SignatureFile = struct {
 
                 var current_file = locked_folder.files.items[file_idx];
 
-                var remaining_len = current_file.size - @intCast(usize, batch_in_file) * read_buffer_size;
-                var len_to_read = std.math.min(remaining_len, read_buffer_size);
+                var remaining_len = current_file.size - @as(usize, @intCast(batch_in_file)) * read_buffer_size;
+                var len_to_read = @min(remaining_len, read_buffer_size);
                 var read_offset = batch_in_file * read_buffer_size;
 
                 read_buffer.read_start_time = std.time.nanoTimestamp();
@@ -348,7 +348,7 @@ pub const SignatureFile = struct {
 
                     for (read_buffer.tasks[0..num_batches_to_schedule]) |*task| {
                         for (task.out_hashes[0..task.num_processed_blocks]) |hash| {
-                            self.blocks.appendAssumeCapacity(.{ .file_idx = @intCast(u32, read_buffer.file_idx), .block_idx = @intCast(u32, block_offset), .hash = hash });
+                            self.blocks.appendAssumeCapacity(.{ .file_idx = @as(u32, @intCast(read_buffer.file_idx)), .block_idx = @as(u32, @intCast(block_offset)), .hash = hash });
                             block_offset += 1;
                         }
                     }
@@ -361,7 +361,7 @@ pub const SignatureFile = struct {
 
                 if (elapsed_time > 100 * std.time.ns_per_ms) {
                     time_since_last_progress_callback = now;
-                    var elapsed_progress = (@intToFloat(f32, self.blocks.items.len) / @intToFloat(f32, num_blocks)) * 100;
+                    var elapsed_progress = (@as(f32, @floatFromInt(self.blocks.items.len)) / @as(f32, @floatFromInt(num_blocks))) * 100;
                     progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Hashing Blocks");
                 }
             }
