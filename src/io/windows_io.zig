@@ -215,16 +215,17 @@ pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []
                             var file_handle: windows.HANDLE = undefined;
 
                             var file_io: windows.IO_STATUS_BLOCK = undefined;
+
                             const rc = ntdll.NtCreateFile(
                                 &file_handle,
-                                windows.FILE_READ_DATA | windows.FILE_WRITE_DATA, //DesiredAccess
+                                windows.FILE_READ_DATA | windows.FILE_WRITE_DATA | windows.FILE_WRITE_ATTRIBUTES | @as(windows.ULONG, if (is_directory) windows.SYNCHRONIZE else windows.FILE_FLAG_OVERLAPPED), //DesiredAccess
                                 &attr,
                                 &file_io,
                                 null, //AllocationSize
                                 0, // FileAttributes
                                 windows.FILE_SHARE_READ, // ShareAccess
                                 windows.FILE_OPEN, // CreateDisposition
-                                0, // CreateOptions
+                                if (is_directory) windows.FILE_SYNCHRONOUS_IO_NONALERT else 0, // CreateOptions
                                 null, //EaBuffer
                                 0, //EaLength
                             );
@@ -234,23 +235,20 @@ pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []
                             }
 
                             if (!is_directory) {
-                                _ = windows.CreateIoCompletionPort(file_handle, self.completion_port, undefined, undefined) catch undefined;
-                            }
-
-                            if (is_directory) {
+                                _ = windows.CreateIoCompletionPort(file_handle, self.completion_port, 1, 0) catch unreachable;
+                                try locked_dir.files.append(.{
+                                    .handle = file_handle,
+                                    .path_offset = prev_offset,
+                                    .path_len = @as(u32, @intCast(end_idx)),
+                                    .size = @as(u64, @intCast(file_info.EndOfFile)),
+                                });
+                            } else {
                                 try directories_to_query.append(.{ .handle = file_handle, .path_offset = prev_offset, .path_len = @as(u32, @intCast(end_idx)) });
 
                                 try locked_dir.directories.append(.{
                                     .handle = file_handle,
                                     .path_offset = prev_offset,
                                     .path_len = @as(u32, @intCast(end_idx)),
-                                });
-                            } else {
-                                try locked_dir.files.append(.{
-                                    .handle = file_handle,
-                                    .path_offset = prev_offset,
-                                    .path_len = @as(u32, @intCast(end_idx)),
-                                    .size = @as(u64, @intCast(file_info.EndOfFile)),
                                 });
                             }
                         }
@@ -265,7 +263,7 @@ pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []
                 .NO_MORE_FILES => break :query,
                 .OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
                 .OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
-                else => return windows.unexpectedStatus(status),
+                else => std.log.warn("Unexpected NTStatus when querying directory: 0x{x}\n", .{@intFromEnum(status)}),
             }
         }
     }
@@ -457,11 +455,13 @@ fn writeFile(implementation: PatchIO.Implementation, handle: PlatformHandle, off
 fn tick(implementation: PatchIO.Implementation) void {
     var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
 
-    var entries: [64]windows.OVERLAPPED_ENTRY = undefined;
+    var entries: [64]windows.OVERLAPPED_ENTRY = std.mem.zeroes([64]windows.OVERLAPPED_ENTRY);
     var num_entries_removed: u32 = 0;
-    _ = windows.kernel32.GetQueuedCompletionStatusEx(self.completion_port, &entries, entries.len, &num_entries_removed, 0, windows.TRUE);
+    if(windows.kernel32.GetQueuedCompletionStatusEx(self.completion_port, &entries, entries.len, &num_entries_removed, 0, windows.TRUE) == 0) {
+        return;
+    }
 
-    for (entries[0..num_entries_removed]) |entry| {
+    for (entries[0..num_entries_removed]) |*entry| {
         var parent_ptr = @fieldParentPtr(ActiveOperation, "overlapped", entry.lpOverlapped);
         var slot_idx = parent_ptr.slot_idx;
 
@@ -482,7 +482,7 @@ pub fn create(allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.Implem
         .allocator = allocator, 
         .operation_slots = undefined,
         .available_operation_slots = std.ArrayList(usize).initCapacity(allocator, MaxSimulatenousOperations) catch return error.Unexpected,
-        .completion_port = try windows.CreateIoCompletionPort(windows.INVALID_HANDLE_VALUE, null, 0, 16)
+        .completion_port = try windows.CreateIoCompletionPort(windows.INVALID_HANDLE_VALUE, null, 0, 1)
     };
     // zig fmt: on
 
