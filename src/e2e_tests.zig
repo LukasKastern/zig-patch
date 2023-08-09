@@ -502,79 +502,79 @@ test "Patch should delete/create files and folders" {
     }
 }
 
-// test "Modifying one block should result in one data operation being generated" {
-//     const cwd = std.fs.cwd();
-//     const TestRootPath = "temp/ModifyBlock";
-//     cwd.makeDir("temp") catch |err| {
-//         switch (err) {
-//             error.PathAlreadyExists => {},
-//             else => {
-//                 return error.CouldntCreateTemp;
-//             },
-//         }
-//     };
+test "Modifying one block should result in one data operation being generated" {
+    const cwd = std.fs.cwd();
+    const TestRootPath = "temp/ModifyBlock";
+    cwd.makeDir("temp") catch |err| {
+        switch (err) {
+            error.PathAlreadyExists => {},
+            else => {
+                return error.CouldntCreateTemp;
+            },
+        }
+    };
 
-//     try cwd.deleteTree(TestRootPath);
-//     try cwd.makeDir(TestRootPath);
-//     var test_root_dir = try cwd.openDir(TestRootPath, .{});
-//     defer test_root_dir.close();
+    try cwd.deleteTree(TestRootPath);
+    try cwd.makeDir(TestRootPath);
+    var test_root_dir = try cwd.openDir(TestRootPath, .{});
+    defer test_root_dir.close();
 
-//     var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
-//     defer std.testing.allocator.free(src_folder_path);
+    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    defer std.testing.allocator.free(src_folder_path);
 
-//     var block_data = try std.testing.allocator.alloc(u8, Block.BlockSize * 32);
-//     defer std.testing.allocator.free(block_data);
-//     {
-//         try cwd.makeDir(src_folder_path);
-//         var src_folder = try cwd.openDir(src_folder_path, .{});
-//         defer src_folder.close();
+    var block_data = try std.testing.allocator.alloc(u8, Block.BlockSize * 32);
+    defer std.testing.allocator.free(block_data);
+    {
+        try cwd.makeDir(src_folder_path);
+        var src_folder = try cwd.openDir(src_folder_path, .{});
+        defer src_folder.close();
 
-//         try generateTestFolder(12587, src_folder, .{});
+        try generateTestFolder(12587, src_folder, .{});
 
-//         var large_file = try src_folder.createFile("LargeFile", .{});
-//         defer large_file.close();
+        var large_file = try src_folder.createFile("LargeFile", .{});
+        defer large_file.close();
 
-//         var prng = std.rand.DefaultPrng.init(14123);
-//         var random = prng.random();
+        var prng = std.rand.DefaultPrng.init(14123);
+        var random = prng.random();
 
-//         random.bytes(block_data);
+        random.bytes(block_data);
 
-//         try large_file.writeAll(block_data);
-//     }
+        try large_file.writeAll(block_data);
+    }
 
-//     var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
-//     thread_pool.spawnThreads();
+    var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    thread_pool.spawnThreads();
 
-//     var operation_config: operations.OperationConfig = .{
-//         .working_dir = test_root_dir,
-//         .thread_pool = &thread_pool,
-//         .allocator = std.testing.allocator,
-//     };
+    var operation_config: operations.OperationConfig = .{
+        .working_dir = test_root_dir,
+        .thread_pool = &thread_pool,
+        .allocator = std.testing.allocator,
+    };
 
-//     try operations.makeSignature("Original", "OriginalSignature", operation_config, null);
-//     var stats: operations.OperationStats = .{};
+    try operations.makeSignature("Original", "OriginalSignature", operation_config, null);
+    var stats: operations.OperationStats = .{};
 
-//     // Modify one block of the "LargeFile".
-//     // This should result in the patch having one data operation with the size of one block.
-//     {
-//         var src_folder = try cwd.openDir(src_folder_path, .{});
-//         defer src_folder.close();
+    // Modify one block of the "LargeFile".
+    // This should result in the patch having one data operation with the size of one block.
+    {
+        var src_folder = try cwd.openDir(src_folder_path, .{});
+        defer src_folder.close();
 
-//         var large_file = try src_folder.openFile("LargeFile", .{ .mode = .read_write });
-//         defer large_file.close();
+        var large_file = try src_folder.openFile("LargeFile", .{ .mode = .read_write });
+        defer large_file.close();
 
-//         var modified_block: [Block.BlockSize]u8 = undefined;
-//         try large_file.reader().readNoEof(&modified_block);
-//         try large_file.seekTo(0);
-//         modified_block[0] = @addWithOverflow(~(modified_block[0]), 25)[0];
-//         try large_file.writeAll(&modified_block);
-//     }
+        var modified_block: [Block.BlockSize]u8 = undefined;
+        try large_file.reader().readNoEof(&modified_block);
+        try large_file.seekTo(0);
+        modified_block[0] = @addWithOverflow(~(modified_block[0]), 25)[0];
+        try large_file.writeAll(&modified_block);
+    }
 
-//     try operations.createPatch("Original", "OriginalSignature", operation_config, &stats);
+    try operations.createPatch("Original", "OriginalSignature", operation_config, &stats);
 
-//     try std.testing.expect(stats.create_patch_stats.?.total_blocks > 0);
-//     try std.testing.expectEqual(@as(usize, 1), stats.create_patch_stats.?.changed_blocks);
-// }
+    try std.testing.expect(stats.create_patch_stats.?.total_blocks > 0);
+    try std.testing.expectEqual(@as(usize, 1), stats.create_patch_stats.?.changed_blocks);
+}
 
 // test "Changing file size should result in one data operation being generated" {
 //     const cwd = std.fs.cwd();

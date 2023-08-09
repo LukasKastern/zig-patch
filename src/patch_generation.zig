@@ -160,6 +160,12 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
         generate_operations_state: BlockPatching.GenerateOperationsState,
 
+        stats: struct {
+            total_blocks: usize = 0,
+            changed_blocks: usize = 0,
+            num_new_bytes: usize = 0,
+        },
+
         const Self = @This();
 
         pub fn generatePatchTask(task: *ThreadPool.Task) void {
@@ -188,6 +194,27 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
             var operations_buffer = temp_allocator.allocator().alloc(u8, DefaultMaxWorkUnitSize) catch unreachable;
             var fixed_buffer_stream = std.io.fixedBufferStream(operations_buffer);
+
+            // Update Stats
+            {
+                for (operations.items) |operation| {
+                    switch (operation) {
+                        .Data => |data| {
+                            var blocks_in_data_op = @ceil(@as(f64, @floatFromInt(data.len)) / @as(f64, @floatFromInt(BlockSize)));
+                            // std.log.info("Data found in {} and part {}, blocks: {}", .{ self.file_info.file_idx, self.file_info.file_part_idx, blocks_in_data_op });
+                            self.stats.changed_blocks += @as(usize, @intFromFloat(blocks_in_data_op));
+                            self.stats.total_blocks += @as(usize, @intFromFloat(blocks_in_data_op));
+                            self.stats.num_new_bytes += data.len;
+                        },
+                        .BlockRange => {
+                            self.stats.total_blocks += operation.BlockRange.block_span;
+                        },
+                        .Invalid => {
+                            unreachable;
+                        },
+                    }
+                }
+            }
 
             // Write operations to the temp buffer.
             {
@@ -339,6 +366,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     .callback = ActivePatchGenerationOperation.generatePatchTask,
                 },
                 .generate_operations_state = undefined,
+                .stats = .{},
             };
             operation_slots[slot].generate_operations_state.init(file.size);
 
@@ -415,6 +443,12 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     IOWriteCallbackWrapper.ioCallback,
                     write_buffer,
                 );
+
+                if (stats) |stats_unwrapped| {
+                    stats_unwrapped.total_blocks += active_operation.stats.total_blocks;
+                    stats_unwrapped.num_new_bytes += active_operation.stats.num_new_bytes;
+                    stats_unwrapped.changed_blocks += active_operation.stats.changed_blocks;
+                }
             }
 
             var next_start_offset = active_operation.next_sequence * DefaultMaxWorkUnitSize;
@@ -546,9 +580,6 @@ pub fn assemblePatchFromFilesV2(patch_io: *PatchIO, patch_files: []std.fs.File, 
             var file_handle = patch_files[patch_file_idx];
             patch_file_idx += 1;
 
-            //TODO: Write this as part of the part before we get here.
-            // try buffered_writer.writeIntBig(usize, read_bytes);
-
             const CopyPatchFileIOWrapper = struct {
                 is_complete: bool,
 
@@ -580,9 +611,6 @@ pub fn assemblePatchFromFilesV2(patch_io: *PatchIO, patch_files: []std.fs.File, 
             }
 
             offset_in_file += try file_handle.getEndPos();
-
-            // try buffered_writer.writeAll(read_buffer[0..read_bytes]);
-            // offset_in_file += read_bytes + @sizeOf(usize);
         }
 
         file_idx += 1;
