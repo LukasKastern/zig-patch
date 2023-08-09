@@ -96,6 +96,7 @@ pub fn build(b: *std.build.Builder) void {
     test_exe.linkLibrary(zlib_dep.artifact("z"));
     test_exe.linkLibrary(zstd);
     test_exe.addIncludePath(.{ .path = zstd_root });
+    test_exe.dwarf_format = .@"32";
 
     const install_test = b.addInstallArtifact(test_exe, .{});
 

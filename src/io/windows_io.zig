@@ -62,6 +62,15 @@ const Operation = union(enum) {
         buffer: []u8,
         io_status_block: windows.IO_STATUS_BLOCK,
     },
+
+    CopyRange: struct {
+        allocator: std.mem.Allocator,
+        out_file: PlatformHandle,
+        in_file: PlatformHandle,
+        out_file_offset: usize,
+        in_file_offset: usize,
+        buffer: []u8,
+    },
 };
 
 const ActiveOperation = struct {
@@ -73,6 +82,7 @@ const ActiveOperation = struct {
 };
 
 const OperationSlot = struct {
+    self: *Self,
     pending_operation: ?ActiveOperation,
 };
 
@@ -90,6 +100,7 @@ allocator: std.mem.Allocator,
 operation_slots: [MaxSimulatenousOperations]OperationSlot,
 available_operation_slots: std.ArrayList(usize),
 completion_port: windows.HANDLE,
+implementation: PatchIO.Implementation,
 
 pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []const u8, allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.LockedDirectory {
     var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
@@ -362,7 +373,12 @@ fn readFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offs
         len_to_read += (512 - len_to_read % 512);
     }
 
-    _ = windows.kernel32.ReadFile(handle, read_file_op.buffer.ptr, len_to_read, null, &operation.pending_operation.?.overlapped);
+    if(windows.kernel32.ReadFile(handle, read_file_op.buffer.ptr, len_to_read, null, &operation.pending_operation.?.overlapped) != 0) {
+        operation.pending_operation.?.callback(operation.pending_operation.?.callback_context);
+        operation.pending_operation = null;
+        self.available_operation_slots.appendAssumeCapacity(slot_idx);
+        return;
+    }
 
     var last_err = windows.kernel32.GetLastError();
     switch (last_err) {
@@ -452,12 +468,73 @@ fn writeFile(implementation: PatchIO.Implementation, handle: PlatformHandle, off
     }
 }
 
+pub fn copyFileRange(implementation: PatchIO.Implementation, out_file: PlatformHandle, in_file: PlatformHandle, out_offset: usize, in_offset: usize, num_bytes: usize, callback: *const fn (*anyopaque) void, callback_ctx: *anyopaque, allocator: std.mem.Allocator) PatchIO.PatchIOErrors!void {
+    var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
+
+    // If there are no slots left we keep ticking until one becomes available.
+    while (self.available_operation_slots.items.len == 0) {
+        implementation.tick(implementation);
+    }
+
+    var slot_idx = self.available_operation_slots.orderedRemove(self.available_operation_slots.items.len - 1);
+    var operation = &self.operation_slots[slot_idx];
+
+    std.debug.assert(operation.pending_operation == null);
+
+    const ReadCompleteCallbackWrapper = struct {
+        pub fn ioReadCallback(ctx: *anyopaque) void {
+            const operation_slot = @as(*OperationSlot, @ptrCast(@alignCast(ctx)));
+            const copy_range = operation_slot.pending_operation.?.operation.CopyRange;
+            writeFile(operation_slot.self.implementation, copy_range.out_file, copy_range.out_file_offset, copy_range.buffer, ioWriteCallback, ctx) catch |e| {
+                switch (e) {
+                    else => {
+                        //TODO: We need to inform the user that the operation failed. For now we just have an "unreachable" here so we at least know that it failed.
+                        operation_slot.pending_operation.?.callback(operation_slot.pending_operation.?.callback_context);
+                        unreachable;
+                    },
+                }
+            };
+        }
+
+        pub fn ioWriteCallback(ctx: *anyopaque) void {
+            const operation_slot = @as(*OperationSlot, @ptrCast(@alignCast(ctx)));
+            const copy_range = operation_slot.pending_operation.?.operation.CopyRange;
+            copy_range.allocator.free(copy_range.buffer);
+            operation_slot.pending_operation.?.callback(operation_slot.pending_operation.?.callback_context);
+
+            operation_slot.self.available_operation_slots.appendAssumeCapacity(operation_slot.pending_operation.?.slot_idx);
+            operation_slot.pending_operation = null;
+       }
+    };
+
+    var buffer = allocator.alloc(u8, num_bytes) catch return PatchIO.PatchIOErrors.OutOfMemory;
+
+    operation.pending_operation = .{
+        .operation = .{
+            .CopyRange = .{
+                .allocator = allocator,
+                .out_file = out_file,
+                .in_file = in_file,
+                .out_file_offset = out_offset,
+                .in_file_offset = in_offset,
+                .buffer = buffer,
+            },
+        },
+        .callback = callback,
+        .callback_context = callback_ctx,
+        .slot_idx = slot_idx,
+        .overlapped = undefined,
+    };
+
+    try readFile(implementation, in_file, in_offset, buffer, ReadCompleteCallbackWrapper.ioReadCallback, @ptrCast(operation));
+}
+
 fn tick(implementation: PatchIO.Implementation) void {
     var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
 
     var entries: [64]windows.OVERLAPPED_ENTRY = std.mem.zeroes([64]windows.OVERLAPPED_ENTRY);
     var num_entries_removed: u32 = 0;
-    if(windows.kernel32.GetQueuedCompletionStatusEx(self.completion_port, &entries, entries.len, &num_entries_removed, 0, windows.TRUE) == 0) {
+    if (windows.kernel32.GetQueuedCompletionStatusEx(self.completion_port, &entries, entries.len, &num_entries_removed, 0, windows.TRUE) == 0) {
         return;
     }
 
@@ -482,7 +559,8 @@ pub fn create(allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.Implem
         .allocator = allocator, 
         .operation_slots = undefined,
         .available_operation_slots = std.ArrayList(usize).initCapacity(allocator, MaxSimulatenousOperations) catch return error.Unexpected,
-        .completion_port = try windows.CreateIoCompletionPort(windows.INVALID_HANDLE_VALUE, null, 0, 1)
+        .completion_port = try windows.CreateIoCompletionPort(windows.INVALID_HANDLE_VALUE, null, 0, 1),
+        .implementation = undefined,
     };
     // zig fmt: on
 
@@ -490,16 +568,20 @@ pub fn create(allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.Implem
         self.available_operation_slots.appendAssumeCapacity(idx);
         self.operation_slots[idx] = .{
             .pending_operation = null,
+            .self = self,
         };
     }
 
-    return .{
+    self.implementation = .{
         .instance_data = self,
         .lock_directory = lockDirectoryRecursively,
         .unlock_directory = unlockDirectory,
         .destroy = destroy,
         .read_file = readFile,
         .write_file = writeFile,
+        .copy_file_range = copyFileRange,
         .tick = tick,
     };
+
+    return self.implementation;
 }

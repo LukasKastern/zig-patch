@@ -14,6 +14,7 @@ const ApplyPatch = @import("apply_patch.zig");
 const operations = @import("operations.zig");
 const OperationStats = operations.OperationStats;
 const builtin = @import("builtin");
+const PatchIO = @import("io/patch_io.zig");
 
 const clap = @import("clap");
 
