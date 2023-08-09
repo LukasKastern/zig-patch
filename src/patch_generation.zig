@@ -233,11 +233,11 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 // Serialize all operations into our fixed_memory_buffer.
                 // We do not write them to the file directly since we first want to have the data go through our compression.
                 BlockPatching.saveOperations(operations, fixed_buffer_writer) catch |e| {
-                    switch(e) {
+                    switch (e) {
                         else => {
                             std.log.err("Failed to save operations. Error: {s}", .{@errorName(e)});
                             unreachable;
-                        }
+                        },
                     }
                 };
             }
@@ -284,7 +284,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
     task_state.per_thread_working_buffers = try allocator.alloc([PerThreadWorkingBufferSize]u8, thread_pool.max_threads * 2);
     defer allocator.free(task_state.per_thread_working_buffers);
 
-    var patch_files: []std.fs.File = blk: {
+    var patch_files: []PatchIO.PlatformHandle = blk: {
         var num_files: usize = 0;
         var next_file: usize = 0;
 
@@ -301,17 +301,14 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             next_file += 1;
         }
 
-        var files = try allocator.alloc(std.fs.File, num_files);
+        var files = try allocator.alloc(PatchIO.PlatformHandle, num_files);
         var patch_file_idx: usize = 0;
+
         while (patch_file_idx < num_files) : (patch_file_idx += 1) {
             var name_buffer: [128]u8 = undefined;
             var name = std.fmt.bufPrint(&name_buffer, "P_{}", .{patch_file_idx}) catch unreachable;
-            files[patch_file_idx] = try options.staging_dir.createFile(
-                name,
-                .{
-                    .read = true,
-                },
-            );
+
+            files[patch_file_idx] = try patch_io.createFile(options.staging_dir.fd, name);
         }
 
         break :blk files;
@@ -455,9 +452,9 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
                 const patch_idx = active_operation.first_sequence_patch_file_idx + active_operation.sequence;
                 const patch_file = patch_files[patch_idx];
-                
+
                 try patch_io.writeFile(
-                    patch_file.handle,
+                    patch_file,
                     0,
                     write_buffer.buffer[0..write_buffer.written_bytes],
                     IOWriteCallbackWrapper.ioCallback,
@@ -486,7 +483,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                             }
                         }
 
-                        if(write_buffers.items.len > max_num_write_buffers) {
+                        if (write_buffers.items.len > max_num_write_buffers) {
                             continue;
                         }
 
@@ -541,7 +538,10 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         patch_io.tick();
     }
 
-    try assemblePatchFromFilesV2(patch_io, patch_files, new_signature, old_signature, options.staging_dir, allocator, options, stats, progress_callback);
+    assemblePatchFromFilesV2(patch_io, patch_files, new_signature, old_signature, options.staging_dir, allocator, options, stats, progress_callback) catch |e| {
+        std.log.err("Failed to assemble patch from files. Error: {s}", .{@errorName(e)});
+        return;
+    };
 }
 
 fn numPatchFilesNeeded(signature: *SignatureFile, work_unit_size: usize) usize {
@@ -556,8 +556,10 @@ fn numPatchFilesNeeded(signature: *SignatureFile, work_unit_size: usize) usize {
     return num_patch_files;
 }
 
-pub fn assemblePatchFromFilesV2(patch_io: *PatchIO, patch_files: []std.fs.File, new_signature: *SignatureFile, old_signature: *SignatureFile, staging_dir: std.fs.Dir, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
-    var patch = try staging_dir.createFile("Patch.pwd", .{});
+pub fn assemblePatchFromFilesV2(patch_io: *PatchIO, patch_files: []PatchIO.PlatformHandle, new_signature: *SignatureFile, old_signature: *SignatureFile, staging_dir: std.fs.Dir, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
+    var patch_handle = try patch_io.createFile(staging_dir.fd, "Patch.pwd");
+
+    var patch = std.fs.File{ .handle = patch_handle };
     defer patch.close();
 
     var patch_writer = patch.writer();
@@ -589,14 +591,18 @@ pub fn assemblePatchFromFilesV2(patch_io: *PatchIO, patch_files: []std.fs.File, 
     // Once all the data is written we go back to the start of the file and write the proper data.
     try patch_file.savePatchHeader(buffered_writer);
     try buffered_file_writer.flush();
-
+https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_duplicate_extents_to_file
     var reserved_header_bytes = try patch.getPos();
 
     var offset_in_file: usize = reserved_header_bytes;
 
     var patch_file_size: usize = 0;
     for (patch_files) |file| {
-        patch_file_size += try file.getEndPos();
+        var f = std.fs.File{
+            .handle = file,
+        };
+
+        patch_file_size += try f.getEndPos();
     }
 
     try patch.setEndPos(reserved_header_bytes + patch_file_size);
@@ -604,6 +610,20 @@ pub fn assemblePatchFromFilesV2(patch_io: *PatchIO, patch_files: []std.fs.File, 
     var file_idx: usize = 0;
     var file_idx_in_patch: usize = 0;
     var patch_file_idx: usize = 0;
+
+    var num_remaining_patches_to_wait_for: usize = 0;
+
+    const CopyPatchFileIOWrapper = struct {
+        num_patches: *usize,
+
+        fn copyCompleteCallback(ctx: *anyopaque) void {
+            var self: *@This() = @ptrCast(@alignCast(ctx));
+            self.num_patches.* -= 1;
+        }
+    };
+
+    var io_wrappers = try allocator.alloc(CopyPatchFileIOWrapper, patch_files.len);
+    defer allocator.free(io_wrappers);
 
     while (file_idx_in_patch < num_files) : (file_idx_in_patch += 1) {
         if (progress_callback) |progress_callback_unwrapped| {
@@ -627,42 +647,40 @@ pub fn assemblePatchFromFilesV2(patch_io: *PatchIO, patch_files: []std.fs.File, 
         var num_patch_file: usize = 0;
         while (num_patch_file < num_parts) : (num_patch_file += 1) {
             var file_handle = patch_files[patch_file_idx];
+            var io_wrapper = &io_wrappers[patch_file_idx];
+            io_wrapper.num_patches = &num_remaining_patches_to_wait_for;
+
             patch_file_idx += 1;
 
-            const CopyPatchFileIOWrapper = struct {
-                is_complete: bool,
-
-                fn copyCompleteCallback(ctx: *anyopaque) void {
-                    var self: *@This() = @ptrCast(ctx);
-                    self.is_complete = true;
-                }
-            };
-
-            var io_wrapper = CopyPatchFileIOWrapper{
-                .is_complete = false,
-            };
+            num_remaining_patches_to_wait_for += 1;
 
             var temp_allocator = std.heap.FixedBufferAllocator.init(read_buffer);
 
+            var f = std.fs.File{
+                .handle = file_handle,
+            };
+
+            var end_pos = try f.getEndPos();
+
             try patch_io.copyFileRange(
                 patch.handle,
-                file_handle.handle,
+                file_handle,
                 offset_in_file,
                 0,
-                try file_handle.getEndPos(),
+                end_pos,
                 CopyPatchFileIOWrapper.copyCompleteCallback,
-                @ptrCast(&io_wrapper),
+                io_wrapper,
                 temp_allocator.allocator(),
             );
 
-            while (!io_wrapper.is_complete) {
-                patch_io.tick();
-            }
-
-            offset_in_file += try file_handle.getEndPos();
+            offset_in_file += end_pos;
         }
 
         file_idx += 1;
+    }
+
+    while (num_remaining_patches_to_wait_for != 0) {
+        patch_io.tick();
     }
 
     try patch.seekTo(0);

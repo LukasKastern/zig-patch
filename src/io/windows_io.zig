@@ -529,6 +529,54 @@ pub fn copyFileRange(implementation: PatchIO.Implementation, out_file: PlatformH
     try readFile(implementation, in_file, in_offset, buffer, ReadCompleteCallbackWrapper.ioReadCallback, @ptrCast(operation));
 }
 
+pub fn createFile(implementation: PatchIO.Implementation, parent_dir: PlatformHandle, file_path: []const u8) PatchIO.PatchIOErrors!PatchIO.PlatformHandle {
+    var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
+
+    const path_w = windows.sliceToPrefixedFileW(file_path) catch return PatchIO.PatchIOErrors.OutOfMemory;
+    var span = path_w.span();
+
+    var nt_name = windows.UNICODE_STRING{
+        .Length = @as(c_ushort, @intCast(span.len * 2)),
+        .MaximumLength = @as(c_ushort, @intCast(span.len * 2)),
+        .Buffer = @constCast(&path_w.data),
+    };
+
+    var attr = windows.OBJECT_ATTRIBUTES{
+        .Length = @sizeOf(windows.OBJECT_ATTRIBUTES),
+        .RootDirectory = parent_dir,
+        .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
+        .ObjectName = &nt_name,
+        .SecurityDescriptor = null,
+        .SecurityQualityOfService = null,
+    };
+
+    var file_handle: windows.HANDLE = undefined;
+
+    var file_io: windows.IO_STATUS_BLOCK = undefined;
+
+    const rc = ntdll.NtCreateFile(
+        &file_handle,
+        windows.FILE_READ_DATA | windows.FILE_WRITE_DATA | windows.FILE_WRITE_ATTRIBUTES | @as(windows.ULONG, windows.FILE_FLAG_OVERLAPPED), //DesiredAccess
+        &attr,
+        &file_io,
+        null, //AllocationSize
+        0, // FileAttributes
+        windows.FILE_SHARE_READ, // ShareAccess
+        windows.FILE_CREATE, // CreateDisposition
+        0, // CreateOptions
+        null, //EaBuffer
+        0, //EaLength
+    );
+
+    if (rc != .SUCCESS) {
+        return windows.unexpectedStatus(rc);
+    }
+
+    _ = windows.CreateIoCompletionPort(file_handle, self.completion_port, 1, 0) catch unreachable;
+
+    return file_handle;
+}
+
 fn tick(implementation: PatchIO.Implementation) void {
     var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
 
@@ -545,8 +593,8 @@ fn tick(implementation: PatchIO.Implementation) void {
         var operation = &self.operation_slots[slot_idx];
 
         operation.pending_operation.?.callback(operation.pending_operation.?.callback_context);
+
         operation.pending_operation = null;
-        
         self.available_operation_slots.appendAssumeCapacity(slot_idx);
     }
 }
@@ -578,6 +626,7 @@ pub fn create(working_dir: std.fs.Dir, allocator: std.mem.Allocator) PatchIO.Pat
         .lock_directory = lockDirectoryRecursively,
         .unlock_directory = unlockDirectory,
         .destroy = destroy,
+        .create_file = createFile,
         .read_file = readFile,
         .write_file = writeFile,
         .copy_file_range = copyFileRange,

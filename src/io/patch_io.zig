@@ -55,6 +55,7 @@ pub const Implementation = struct {
     lock_directory: *const fn (ImplSelf, []const u8, std.mem.Allocator) PatchIOErrors!LockedDirectory,
     unlock_directory: *const fn (ImplSelf, locked_directory: LockedDirectory) void,
     destroy: *const fn (ImplSelf) void,
+    create_file: *const fn (ImplSelf, PlatformHandle, []const u8) PatchIOErrors!PlatformHandle,
     read_file: *const fn (ImplSelf, PlatformHandle, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
     write_file: *const fn (ImplSelf, PlatformHandle, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
     copy_file_range: *const fn (ImplSelf, PlatformHandle, PlatformHandle, usize, usize, usize, *const fn (*anyopaque) void, *anyopaque, allocator: std.mem.Allocator) PatchIOErrors!void,
@@ -98,6 +99,10 @@ pub fn writeFile(self: *Self, handle: PlatformHandle, offset: usize, buffer: []u
 
 pub fn copyFileRange(self: *Self, out_file: PlatformHandle, in_file: PlatformHandle, out_offset: usize, in_offset: usize, num_bytes: usize, callback: *const fn (*anyopaque) void, callback_context: *anyopaque, allocator: std.mem.Allocator) PatchIOErrors!void {
     return self.impl.copy_file_range(self.impl, out_file, in_file, out_offset, in_offset, num_bytes, callback, callback_context, allocator);
+}
+
+pub fn createFile(self: *Self, parent_dir: PlatformHandle, file_path: []const u8) PatchIOErrors!PlatformHandle {
+    return self.impl.create_file(self.impl, parent_dir, file_path);
 }
 
 test "Locking directory should return correct files" {
