@@ -121,7 +121,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
     const num_read_buffers = 16;
 
-    const PerThreadWorkingBufferSize = DefaultMaxWorkUnitSize * 2;
+    const PerThreadWorkingBufferSize = DefaultMaxWorkUnitSize * 3;
 
     const PatchGenerationTaskState = struct {
         read_buffers: [num_read_buffers]ReadBuffer,
@@ -182,18 +182,20 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             var data_buffer = &self.state.read_buffers[self.current_read_buffer.?];
             self.generate_operations_state.in_buffer = &data_buffer.data;
 
-            var temp_buffer = &self.state.per_thread_working_buffers[ThreadPool.Thread.current.?.idx];
+            var thread_idx = ThreadPool.Thread.current.?.idx;
+
+            var temp_buffer = self.state.per_thread_working_buffers[thread_idx][0..];
             var temp_allocator = std.heap.FixedBufferAllocator.init(temp_buffer);
+
+            var temp_allocator_interface = temp_allocator.allocator();
+            var operations_buffer = temp_allocator_interface.alloc(u8, DefaultMaxWorkUnitSize) catch unreachable;
 
             var operations = BlockPatching.generateOperationsForBufferIncremental(
                 self.state.block_map.*,
                 &self.generate_operations_state,
-                temp_allocator.allocator(),
+                temp_allocator_interface,
                 MaxDataOperationLength,
             ) catch unreachable;
-
-            var operations_buffer = temp_allocator.allocator().alloc(u8, DefaultMaxWorkUnitSize) catch unreachable;
-            var fixed_buffer_stream = std.io.fixedBufferStream(operations_buffer);
 
             // Update Stats
             {
@@ -215,6 +217,8 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     }
                 }
             }
+
+            var fixed_buffer_stream = std.io.fixedBufferStream(operations_buffer);
 
             // Write operations to the temp buffer.
             {
@@ -264,7 +268,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
     task_state.signature = new_signature;
     task_state.block_map = anchored_block_map;
-    task_state.per_thread_working_buffers = try allocator.alloc([PerThreadWorkingBufferSize]u8, thread_pool.max_threads * 2);
+    task_state.per_thread_working_buffers = try allocator.alloc([PerThreadWorkingBufferSize]u8, thread_pool.max_threads);
     defer allocator.free(task_state.per_thread_working_buffers);
 
     var patch_files: []std.fs.File = blk: {

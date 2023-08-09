@@ -168,23 +168,20 @@ pub const GenerateOperationsState = struct {
             std.mem.copy(u8, out_slice, prev_data_slice);
         }
 
-        // Take the test of the bytes from the current in_buffer.
+        // Take the rest of the bytes from the current in_buffer.
         {
+            const in_buffer_start_in_file = state.previous_step_start + state.previous_step_data_tail.len;
+
+            const in_buffer_copy_start = if(bytes_from_prev > 0) 0 else start - in_buffer_start_in_file;
+
             const actual_copied_bytes_from_prev = @as(usize, @intCast(@max(bytes_from_prev, 0)));
             const bytes_to_copy = out_slice.len - actual_copied_bytes_from_prev;
 
-            // Start to take bytes from in the current in_buffer
-            const distance_to_current = @as(usize, @intCast(@max(-bytes_from_prev, 0)));
-
-            // Make sure the in_buffer has enough bytes to fill the out_slice.
-            std.debug.assert(distance_to_current + bytes_to_copy <=
-                state.in_buffer.len);
-
-            if (distance_to_current + bytes_to_copy > state.in_buffer.len) {
+            if (in_buffer_copy_start + bytes_to_copy > state.in_buffer.len) {
                 return error.MoreDataNeeded;
             }
 
-            var in_buffer_slice = state.in_buffer[distance_to_current .. distance_to_current + bytes_to_copy];
+            var in_buffer_slice = state.in_buffer[in_buffer_copy_start .. in_buffer_copy_start + bytes_to_copy];
             std.mem.copy(u8, out_slice[actual_copied_bytes_from_prev..], in_buffer_slice);
         }
     }
