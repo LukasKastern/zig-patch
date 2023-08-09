@@ -545,8 +545,8 @@ fn tick(implementation: PatchIO.Implementation) void {
         var operation = &self.operation_slots[slot_idx];
 
         operation.pending_operation.?.callback(operation.pending_operation.?.callback_context);
-
         operation.pending_operation = null;
+        
         self.available_operation_slots.appendAssumeCapacity(slot_idx);
     }
 }

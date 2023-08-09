@@ -122,9 +122,22 @@ pub const GenerateOperationsState = struct {
 
         // Emit data op of current owed data tail
         if (state.tail != state.owed_data_tail) {
-            var new_data_op = try allocator.alloc(u8, state.tail - state.owed_data_tail);
-            state.getFileSlice(state.owed_data_tail, new_data_op) catch unreachable;
-            try operations.append(.{ .Data = new_data_op });
+                var file_slice = blk: {
+                    var data_len = state.tail - state.owed_data_tail;
+                    
+                    var empty_slice: [0]u8 = undefined;
+
+                    // First try to get the file slice as a reference.
+                    // If that is not possible we allocate the required memory.
+       var slice = state.getFileSlice(state.owed_data_tail, &empty_slice, data_len) catch err_blk:  {
+                        var new_data_op = try allocator.alloc(u8, data_len);
+                        break :err_blk state.getFileSlice(state.owed_data_tail, new_data_op, data_len) catch unreachable;
+                    };
+
+                    break :blk slice;
+                };
+
+                try operations.append(.{ .Data = file_slice });
             state.owed_data_tail = state.tail;
         }
 
@@ -136,8 +149,7 @@ pub const GenerateOperationsState = struct {
 
         state.previous_step_data_tail = state.previous_step_data_tail_backing_buffer[0..num_remaining_bytes];
 
-        const slice_from_in_buffer = state.in_buffer[state.in_buffer.len -
-            num_remaining_bytes ..];
+        const slice_from_in_buffer = state.in_buffer[state.in_buffer.len - num_remaining_bytes ..];
 
         std.mem.copy(u8, state.previous_step_data_tail, slice_from_in_buffer);
         state.in_buffer = &[_]u8{};
@@ -155,16 +167,24 @@ pub const GenerateOperationsState = struct {
         state.jump_to_next_block = true;
     }
 
-    pub fn getFileSlice(state: *const GenerateOperationsState, start: usize, out_slice: []u8) !void {
+    pub fn getFileSlice(state: *const GenerateOperationsState, start: usize, backing_buffer: []u8, desired_size: usize) ![]u8 {
         const distance_from_prev = start - state.previous_step_start;
         const bytes_from_prev = @as(isize, @intCast(state.previous_step_data_tail.len)) -
             @as(isize, @intCast(distance_from_prev));
 
+        var out_slice: []u8 = undefined;
+
         if (bytes_from_prev > 0) {
             const prev_data_len = state.previous_step_data_tail.len;
-            const num_bytes_to_copy = @min(@as(usize, @intCast(bytes_from_prev)), out_slice.len);
+            const num_bytes_to_copy = @min(@as(usize, @intCast(bytes_from_prev)), desired_size);
             const prev_slice_start = prev_data_len - @as(usize, @intCast(bytes_from_prev));
             const prev_data_slice = state.previous_step_data_tail[prev_slice_start .. prev_slice_start + num_bytes_to_copy];
+            
+            if(backing_buffer.len < desired_size) {
+                return error.BackingBufferTooSmall;
+            }
+
+            out_slice = backing_buffer[0..desired_size];
             std.mem.copy(u8, out_slice, prev_data_slice);
         }
 
@@ -175,15 +195,23 @@ pub const GenerateOperationsState = struct {
             const in_buffer_copy_start = if(bytes_from_prev > 0) 0 else start - in_buffer_start_in_file;
 
             const actual_copied_bytes_from_prev = @as(usize, @intCast(@max(bytes_from_prev, 0)));
-            const bytes_to_copy = out_slice.len - actual_copied_bytes_from_prev;
+            const bytes_to_copy = desired_size - actual_copied_bytes_from_prev;
 
             if (in_buffer_copy_start + bytes_to_copy > state.in_buffer.len) {
                 return error.MoreDataNeeded;
             }
 
             var in_buffer_slice = state.in_buffer[in_buffer_copy_start .. in_buffer_copy_start + bytes_to_copy];
-            std.mem.copy(u8, out_slice[actual_copied_bytes_from_prev..], in_buffer_slice);
+
+            // If we do not have to assemble a custom block using the backing buffer we directly reference the data from the in_buffer.
+            if(bytes_from_prev <= 0) {
+                out_slice = in_buffer_slice;
+            } else {
+                std.mem.copy(u8, out_slice[actual_copied_bytes_from_prev..], in_buffer_slice);
+            }
         }
+
+        return out_slice;
     }
 };
 
@@ -202,13 +230,13 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
                 break;
             }
 
-            current_block = current_block_backing_buffer[0 .. new_head - state.tail];
-            state.getFileSlice(state.tail, current_block) catch |e| {
+            current_block = state.getFileSlice(state.tail, &current_block_backing_buffer, new_head - state.tail) catch |e| {
                 switch (e) {
                     error.MoreDataNeeded => {
                         try state.prepareForNextIteration(&patch_operations, allocator);
                         return patch_operations;
                     },
+                    else => unreachable,
                 }
             };
 
@@ -218,13 +246,13 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
 
             state.jump_to_next_block = false;
         } else {
-            current_block = current_block_backing_buffer[0 .. state.head - state.tail];
-            state.getFileSlice(state.tail, current_block) catch |e| {
+            current_block = state.getFileSlice(state.tail, &current_block_backing_buffer, state.head - state.tail) catch |e| {
                 switch (e) {
                     error.MoreDataNeeded => {
                         try state.prepareForNextIteration(&patch_operations, allocator);
                         return patch_operations;
                     },
+                    else => unreachable,
                 }
             };
 
@@ -265,10 +293,22 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
 
         if (known_block) |block| {
             if (state.tail != state.owed_data_tail) {
-                var new_data_op = try allocator.alloc(u8, state.tail - state.owed_data_tail);
-                state.getFileSlice(state.owed_data_tail, new_data_op) catch unreachable;
+                var file_slice = blk: {
+                    var data_len = state.tail - state.owed_data_tail;
+                    
+                    var empty_slice: [0]u8 = undefined;
 
-                try patch_operations.append(.{ .Data = new_data_op });
+                    // First try to get the file slice as a reference.
+                    // If that is not possible we allocate the required memory.
+       var slice = state.getFileSlice(state.owed_data_tail, &empty_slice, data_len) catch err_blk:  {
+                        var new_data_op = try allocator.alloc(u8, data_len);
+                        break :err_blk state.getFileSlice(state.owed_data_tail, new_data_op, data_len) catch unreachable;
+                    };
+
+                    break :blk slice;
+                };
+
+                try patch_operations.append(.{ .Data = file_slice });
             }
 
             //TODO: Check if last operation is the same. If so merge span. (lukas)
@@ -289,10 +329,23 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
             const needs_to_omit_data_op = reached_end_of_buffer or (state.tail - state.owed_data_tail >= max_operation_len);
 
             if (can_omit_data_op and needs_to_omit_data_op) {
-                var new_data_op = try allocator.alloc(u8, state.tail - state.owed_data_tail);
-                state.getFileSlice(state.owed_data_tail, new_data_op) catch unreachable;
+                //TODO: Remove the duplicates of this code.
+                var file_slice = blk: {
+                    var data_len = state.tail - state.owed_data_tail;
+                    
+                    var empty_slice: [0]u8 = undefined;
 
-                try patch_operations.append(.{ .Data = new_data_op });
+                    // First try to get the file slice as a reference.
+                    // If that is not possible we allocate the required memory.
+       var slice = state.getFileSlice(state.owed_data_tail, &empty_slice, data_len) catch err_blk:  {
+                        var new_data_op = try allocator.alloc(u8, data_len);
+                        break :err_blk state.getFileSlice(state.owed_data_tail, new_data_op, data_len) catch unreachable;
+                    };
+
+                    break :blk slice;
+                };
+
+                try patch_operations.append(.{ .Data = file_slice });
 
                 // std.log.err("Appending Block {}:{}", .{ owed_data_tail, tail });
                 state.owed_data_tail = state.tail;
@@ -306,10 +359,22 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
     }
 
     if (state.owed_data_tail != state.tail) {
-        var new_data_op = try allocator.alloc(u8, state.tail - state.owed_data_tail);
-        state.getFileSlice(state.owed_data_tail, new_data_op) catch unreachable;
+                var file_slice = blk: {
+                    var data_len = state.tail - state.owed_data_tail;
+                    
+                    var empty_slice: [0]u8 = undefined;
 
-        try patch_operations.append(.{ .Data = new_data_op });
+                    // First try to get the file slice as a reference.
+                    // If that is not possible we allocate the required memory.
+                    var slice = state.getFileSlice(state.owed_data_tail, &empty_slice, data_len) catch err_blk:  {
+                        var new_data_op = try allocator.alloc(u8, data_len);
+                        break :err_blk state.getFileSlice(state.owed_data_tail, new_data_op, data_len) catch unreachable;
+                    };
+
+                    break :blk slice;
+                };
+
+        try patch_operations.append(.{ .Data = file_slice });
         state.owed_data_tail = state.tail;
     }
 
