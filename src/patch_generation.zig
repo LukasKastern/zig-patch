@@ -109,7 +109,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
     // _ = patch_stats;
 
     const WriteBuffer = struct {
-        buffer: [DefaultMaxWorkUnitSize]u8,
+        buffer: [DefaultMaxWorkUnitSize + 1024]u8,
         written_bytes: usize,
         is_ready: bool,
     };
@@ -173,7 +173,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             var is_last_sequence = remaining_len <= DefaultMaxWorkUnitSize;
             _ = is_last_sequence;
 
-            var data_buffer = self.state.read_buffers[self.current_read_buffer.?];
+            var data_buffer = &self.state.read_buffers[self.current_read_buffer.?];
             self.generate_operations_state.in_buffer = &data_buffer.data;
 
             var temp_buffer = &self.state.per_thread_working_buffers[ThreadPool.Thread.current.?.idx];
@@ -186,31 +186,36 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 MaxDataOperationLength,
             ) catch unreachable;
 
-            var fixed_buffer_stream = std.io.fixedBufferStream(self.write_buffer.buffer[0..]);
-            var fixed_buffer_writer = fixed_buffer_stream.writer();
+            var operations_buffer = temp_allocator.allocator().alloc(u8, DefaultMaxWorkUnitSize) catch unreachable;
+            var fixed_buffer_stream = std.io.fixedBufferStream(operations_buffer);
 
-            //TODO: Don't use integers with architecture dependent sizes... (lukas)
-            fixed_buffer_writer.writeIntBig(usize, 0) catch unreachable;
+            // Write operations to the temp buffer.
+            {
+                var fixed_buffer_writer = fixed_buffer_stream.writer();
 
-            // Serialize all operations into our fixed_memory_buffer.
-            // We do not write them to the file directly since we first want to have the data go through our compression.
-            BlockPatching.saveOperations(operations, fixed_buffer_writer) catch unreachable;
-            self.write_buffer.written_bytes = fixed_buffer_stream.pos;
+                // Serialize all operations into our fixed_memory_buffer.
+                // We do not write them to the file directly since we first want to have the data go through our compression.
+                BlockPatching.saveOperations(operations, fixed_buffer_writer) catch unreachable;
+            }
 
-            var total_size = fixed_buffer_stream.pos - @sizeOf(usize);
-            fixed_buffer_stream.pos = 0;
-            fixed_buffer_writer.writeIntBig(usize, total_size) catch unreachable;
+            // Compress the operations_buffer into the write_buffer
+            {
+                //TODO: Can we use a fallback allocator?
+                var deflating_allocator = std.heap.c_allocator;
 
-            // std.log.err(
-            //     "GeneratePatch {} {}, Last={}, {} {}",
-            //     .{
-            //         self.target_file,
-            //         self.sequence,
-            //         is_last_sequence,
-            //         self.generate_operations_state.file_size,
-            //         operations.items.len,
-            //     },
-            // );
+                var deflating = Compression.Deflating.init(Compression.Default, deflating_allocator) catch unreachable;
+                defer deflating.deinit();
+
+                var deflated_data = deflating.deflateBuffer(fixed_buffer_stream.buffer[0..fixed_buffer_stream.pos], self.write_buffer.buffer[@sizeOf(usize)..]) catch unreachable;
+
+                // Write the total compressed size which we need to inflate the data when applying the patch.
+                {
+                    var write_buffer_stream = std.io.fixedBufferStream(&self.write_buffer.buffer);
+                    write_buffer_stream.writer().writeIntBig(usize, deflated_data.len) catch unreachable;
+                }
+
+                self.write_buffer.written_bytes = deflated_data.len + @sizeOf(usize);
+            }
 
             self.has_active_task.store(0, .Release);
         }

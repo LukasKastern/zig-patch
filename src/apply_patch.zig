@@ -95,8 +95,7 @@ const ApplyPatchTask = struct {
     target_dir: std.fs.Dir,
     per_thread_patch_files: []std.fs.File,
     section: FileSection,
-    file: PatchIO.FileInfo,
-    locked_directory: PatchIO.LockedDirectory,
+    file: SignatureFile.File,
 
     per_thread_operations_buffer: [][]u8,
     per_thread_read_buffers: [][]u8,
@@ -124,9 +123,10 @@ const ApplyPatchTask = struct {
 
         var file_reader = patch_file.reader();
 
-        var target_file = try self.target_dir.openFile(self.file.resolvePath(self.locked_directory), .{
+        var target_file = try self.target_dir.openFile(self.file.name, .{
             .mode = .write_only,
         });
+
         defer target_file.close();
         try target_file.setEndPos(self.file.size);
 
@@ -140,10 +140,6 @@ const ApplyPatchTask = struct {
 
             var operations_allocator = fixed_buffer_allocator.allocator();
             var compressed_section_size = try file_reader.readIntBig(usize);
-
-            if (compressed_section_size > (PatchGeneration.DefaultMaxWorkUnitSize + 256)) {
-                return error.CompressedSectionIsLargerThanMaxSize;
-            }
 
             var compressed_data_buffer = try operations_allocator.alloc(u8, compressed_section_size);
             try file_reader.readNoEof(compressed_data_buffer);
@@ -269,8 +265,7 @@ pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: 
             .sections_remaining = &sections_remaining, 
             .per_thread_patch_files = per_thread_patch_files, 
             .task = ThreadPool.Task{ .callback = ApplyPatchTask.applyPatch }, 
-            .file = patch.new.data.?.OnDiskSignatureFile.locked_directory.files.items[section.file_idx],
-            .locked_directory =  patch.new.data.?.OnDiskSignatureFile.locked_directory,
+            .file = patch.new.getFile(section.file_idx),
         };
         // zig fmt: on
 
