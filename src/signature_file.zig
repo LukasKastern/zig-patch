@@ -186,16 +186,14 @@ pub const SignatureFile = struct {
     pub fn generateFromFolder(self: *SignatureFile, dir: []const u8, thread_pool: *ThreadPool, on_progress: ?ProgressCallback, patch_io: *PatchIO) !void {
         self.deallocateBuffers();
 
-        var locked_folder = patch_io.lockDirectory(dir, self.allocator) catch {
+        var locked_folder = patch_io.lockDirectory(dir, self.allocator) catch |e| {
+            std.log.err("Failed to lock directory \"{s}\". Error: {s}", .{ dir, @errorName(e) });
             return error.SignatureFolderNotFound;
         };
 
         errdefer patch_io.unlockDirectory(locked_folder);
 
         self.data = .{ .OnDiskSignatureFile = .{ .locked_directory = locked_folder, .io = patch_io.* } };
-
-        var dir_handle = try std.fs.cwd().openDir(dir, .{});
-        defer dir_handle.close();
 
         var num_blocks: usize = 0;
         var num_total_read_batches: usize = 0;

@@ -97,6 +97,7 @@ const Self = @This();
 
 allocator: std.mem.Allocator,
 
+working_dir: std.fs.Dir,
 operation_slots: [MaxSimulatenousOperations]OperationSlot,
 available_operation_slots: std.ArrayList(usize),
 completion_port: windows.HANDLE,
@@ -113,8 +114,7 @@ pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []
         .allocator = allocator,
     };
 
-    var cwd = std.fs.cwd();
-    var target_dir = cwd.openIterableDir(path, .{}) catch return error.FailedToOpenDir;
+    var target_dir = self.working_dir.openIterableDir(path, .{}) catch return error.FailedToOpenDir;
 
     locked_dir.handle = target_dir.dir.fd;
     errdefer {
@@ -373,7 +373,7 @@ fn readFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offs
         len_to_read += (512 - len_to_read % 512);
     }
 
-    if(windows.kernel32.ReadFile(handle, read_file_op.buffer.ptr, len_to_read, null, &operation.pending_operation.?.overlapped) != 0) {
+    if (windows.kernel32.ReadFile(handle, read_file_op.buffer.ptr, len_to_read, null, &operation.pending_operation.?.overlapped) != 0) {
         operation.pending_operation.?.callback(operation.pending_operation.?.callback_context);
         operation.pending_operation = null;
         self.available_operation_slots.appendAssumeCapacity(slot_idx);
@@ -504,7 +504,7 @@ pub fn copyFileRange(implementation: PatchIO.Implementation, out_file: PlatformH
 
             operation_slot.self.available_operation_slots.appendAssumeCapacity(operation_slot.pending_operation.?.slot_idx);
             operation_slot.pending_operation = null;
-       }
+        }
     };
 
     var buffer = allocator.alloc(u8, num_bytes) catch return PatchIO.PatchIOErrors.OutOfMemory;
@@ -551,12 +551,13 @@ fn tick(implementation: PatchIO.Implementation) void {
     }
 }
 
-pub fn create(allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.Implementation {
+pub fn create(working_dir: std.fs.Dir, allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.Implementation {
     var self = allocator.create(Self) catch return error.OutOfMemory;
 
     // zig fmt: off
     self.* = .{ 
         .allocator = allocator, 
+        .working_dir = working_dir,
         .operation_slots = undefined,
         .available_operation_slots = std.ArrayList(usize).initCapacity(allocator, MaxSimulatenousOperations) catch return error.Unexpected,
         .completion_port = try windows.CreateIoCompletionPort(windows.INVALID_HANDLE_VALUE, null, 0, 1),

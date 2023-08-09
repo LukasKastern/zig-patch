@@ -65,9 +65,9 @@ const Self = @This();
 
 impl: Implementation,
 
-pub fn init(allocator: std.mem.Allocator) PatchIOErrors!Self {
+pub fn init(working_dir: std.fs.Dir, allocator: std.mem.Allocator) PatchIOErrors!Self {
     return .{
-        .impl = try WindowsIO.create(allocator),
+        .impl = try WindowsIO.create(working_dir, allocator),
     };
 }
 
@@ -101,7 +101,7 @@ pub fn copyFileRange(self: *Self, out_file: PlatformHandle, in_file: PlatformHan
 }
 
 test "Locking directory should return correct files" {
-    var io = try init(std.testing.allocator);
+    var io = try init(std.fs.cwd(), std.testing.allocator);
     defer io.deinit();
 
     // // Create test data

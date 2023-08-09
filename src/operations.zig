@@ -267,7 +267,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
 
         std.log.info("Generating Signature from {s}...", .{source_folder_path});
 
-        var patch_io = try PatchIO.init(allocator);
+        var patch_io = try PatchIO.init(cwd, allocator);
         defer patch_io.deinit();
 
         var src_folder_temp_buffer: [1024]u8 = undefined;
@@ -329,7 +329,7 @@ pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []con
     var file = try config.working_dir.createFile(output_path, .{});
     defer file.close();
 
-    var patch_io = try PatchIO.init(config.allocator);
+    var patch_io = try PatchIO.init(config.working_dir, config.allocator);
     defer patch_io.deinit();
 
     try signature_file.generateFromFolder(folder_to_make_signature_of, config.thread_pool, config.progress_callback, &patch_io);

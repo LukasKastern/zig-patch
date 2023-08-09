@@ -322,6 +322,9 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 break :blk write_buffer;
             };
 
+            write_buffer.is_ready = false;
+            write_buffer.written_bytes = ~@as(usize, 0);
+
             operation_slots[slot] = .{
                 .state = task_state,
                 .next_sequence = 0,
