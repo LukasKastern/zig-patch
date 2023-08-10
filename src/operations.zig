@@ -312,7 +312,10 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
         try std.os.rename(src_patch_path, dst_patch_path);
     }
 
-    try std.fs.deleteTreeAbsolute(staging_dir_path);
+    std.fs.deleteTreeAbsolute(staging_dir_path) catch |e| {
+        std.log.err("Failed to delete staging dir. Error: {s}", .{@errorName(e)});
+    };
+    
     std.log.info("The patch was generated successfully", .{});
 }
 

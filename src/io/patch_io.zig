@@ -58,7 +58,7 @@ pub const Implementation = struct {
     create_file: *const fn (ImplSelf, PlatformHandle, []const u8) PatchIOErrors!PlatformHandle,
     read_file: *const fn (ImplSelf, PlatformHandle, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
     write_file: *const fn (ImplSelf, PlatformHandle, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
-    copy_file_range: *const fn (ImplSelf, PlatformHandle, PlatformHandle, usize, usize, usize, *const fn (*anyopaque) void, *anyopaque, allocator: std.mem.Allocator) PatchIOErrors!void,
+    merge_files: *const fn (ImplSelf, PlatformHandle, []PlatformHandle, usize, *const fn (*anyopaque) void, *anyopaque, allocator: std.mem.Allocator) PatchIOErrors!void,
     tick: *const fn (ImplSelf) void,
 };
 
@@ -97,8 +97,8 @@ pub fn writeFile(self: *Self, handle: PlatformHandle, offset: usize, buffer: []u
     return self.impl.write_file(self.impl, handle, offset, buffer, callback, callback_context);
 }
 
-pub fn copyFileRange(self: *Self, out_file: PlatformHandle, in_file: PlatformHandle, out_offset: usize, in_offset: usize, num_bytes: usize, callback: *const fn (*anyopaque) void, callback_context: *anyopaque, allocator: std.mem.Allocator) PatchIOErrors!void {
-    return self.impl.copy_file_range(self.impl, out_file, in_file, out_offset, in_offset, num_bytes, callback, callback_context, allocator);
+pub fn mergeFiles(self: *Self, out_file: PlatformHandle, in_files: []PlatformHandle, total_bytes_to_copy: usize, callback: *const fn (*anyopaque) void, callback_context: *anyopaque, allocator: std.mem.Allocator) PatchIOErrors!void {
+    return self.impl.merge_files(self.impl, out_file, in_files, total_bytes_to_copy, callback, callback_context, allocator);
 }
 
 pub fn createFile(self: *Self, parent_dir: PlatformHandle, file_path: []const u8) PatchIOErrors!PlatformHandle {

@@ -46,6 +46,12 @@ const kernel32_extra = struct {
     ) callconv(windows.WINAPI) windows.BOOL;
 
     pub extern "kernel32" fn ReadFileEx(in_hFile: windows.HANDLE, out_lpBuffer: [*]u8, in_nNumberOfBytesToRead: windows.DWORD, in_out_lpOverlapped: ?*windows.OVERLAPPED, lpCompletionRoutine: windows.LPOVERLAPPED_COMPLETION_ROUTINE) callconv(windows.WINAPI) windows.BOOL;
+
+    pub extern "kernel32" fn CreateFileMappingA(in_hFile: windows.HANDLE, attributes: ?*windows.SECURITY_ATTRIBUTES, flProtect: windows.DWORD, dwMaximumSizeHigh: windows.DWORD, dwMaximumSizeLow: windows.DWORD, lpName: ?windows.LPCSTR) callconv(windows.WINAPI) ?windows.HANDLE;
+
+    pub extern "kernel32" fn MapViewOfFile(hFileMappingObject: windows.HANDLE, dwDesiredAccess: windows.DWORD, dwFileOffsetHigh: windows.DWORD, dwFileOffsetLow: windows.DWORD, dwNumberOfBytesToMap: windows.SIZE_T) callconv(windows.WINAPI) ?windows.LPVOID;
+
+    pub extern "kernel32" fn UnmapViewOfFile(lpBaseAddress: windows.LPCVOID) callconv(windows.WINAPI) windows.BOOL;
 };
 
 const Operation = union(enum) {
@@ -468,65 +474,66 @@ fn writeFile(implementation: PatchIO.Implementation, handle: PlatformHandle, off
     }
 }
 
-pub fn copyFileRange(implementation: PatchIO.Implementation, out_file: PlatformHandle, in_file: PlatformHandle, out_offset: usize, in_offset: usize, num_bytes: usize, callback: *const fn (*anyopaque) void, callback_ctx: *anyopaque, allocator: std.mem.Allocator) PatchIO.PatchIOErrors!void {
+pub fn mergeFiles(implementation: PatchIO.Implementation, out_file: PlatformHandle, in_files: []PlatformHandle, total_bytes_to_copy: usize, callback: *const fn (*anyopaque) void, callback_ctx: *anyopaque, allocator: std.mem.Allocator) PatchIO.PatchIOErrors!void {
     var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
 
-    // If there are no slots left we keep ticking until one becomes available.
-    while (self.available_operation_slots.items.len == 0) {
-        implementation.tick(implementation);
+    var out_file_zig_std = std.fs.File{ .handle = out_file };
+    var file_len = out_file_zig_std.getEndPos() catch return PatchIO.PatchIOErrors.Unexpected;
+    out_file_zig_std.setEndPos(total_bytes_to_copy + file_len) catch return PatchIO.PatchIOErrors.Unexpected;
+
+    var mapped_file_maybe = kernel32_extra.CreateFileMappingA(out_file, null, windows.PAGE_READWRITE, 0, 0, null);
+    if (mapped_file_maybe == null) {
+        var last_err = windows.kernel32.GetLastError();
+        std.log.err("Failed to CreateFileMapping for output. Error: {}", .{last_err});
+        return error.Unexpected;
     }
 
-    var slot_idx = self.available_operation_slots.orderedRemove(self.available_operation_slots.items.len - 1);
-    var operation = &self.operation_slots[slot_idx];
+    var mapped_file = mapped_file_maybe.?;
+    defer windows.CloseHandle(mapped_file);
 
-    std.debug.assert(operation.pending_operation == null);
+    var out_data_ptr_maybe = kernel32_extra.MapViewOfFile(mapped_file, windows.SECTION_MAP_WRITE, 0, 0, file_len + total_bytes_to_copy);
+    if (out_data_ptr_maybe == null) {
+        var last_err = windows.kernel32.GetLastError();
+        std.log.err("Failed to MapViewOfFile for output. Error: {}", .{last_err});
+        return error.Unexpected;
+    }
 
-    const ReadCompleteCallbackWrapper = struct {
-        pub fn ioReadCallback(ctx: *anyopaque) void {
-            const operation_slot = @as(*OperationSlot, @ptrCast(@alignCast(ctx)));
-            const copy_range = operation_slot.pending_operation.?.operation.CopyRange;
-            writeFile(operation_slot.self.implementation, copy_range.out_file, copy_range.out_file_offset, copy_range.buffer, ioWriteCallback, ctx) catch |e| {
-                switch (e) {
-                    else => {
-                        //TODO: We need to inform the user that the operation failed. For now we just have an "unreachable" here so we at least know that it failed.
-                        operation_slot.pending_operation.?.callback(operation_slot.pending_operation.?.callback_context);
-                        unreachable;
-                    },
-                }
-            };
+    var out_data_ptr = out_data_ptr_maybe.?;
+    defer _ = kernel32_extra.UnmapViewOfFile(out_data_ptr);
+
+    var write_offset: usize = file_len;
+    for (in_files) |in_file| {
+        var in_file_zig_std = std.fs.File{ .handle = in_file };
+        var in_file_len = in_file_zig_std.getEndPos() catch return error.Unexpected;
+
+        var mapped_in_file_maybe = kernel32_extra.CreateFileMappingA(in_file, null, windows.PAGE_READONLY, 0, 0, null);
+        if (mapped_in_file_maybe == null) {
+            var last_err = windows.kernel32.GetLastError();
+            std.log.err("Failed to CreateFileMapping for input. Error: {}", .{last_err});
+            return error.Unexpected;
         }
 
-        pub fn ioWriteCallback(ctx: *anyopaque) void {
-            const operation_slot = @as(*OperationSlot, @ptrCast(@alignCast(ctx)));
-            const copy_range = operation_slot.pending_operation.?.operation.CopyRange;
-            copy_range.allocator.free(copy_range.buffer);
-            operation_slot.pending_operation.?.callback(operation_slot.pending_operation.?.callback_context);
+        var mapped_in_file = mapped_in_file_maybe.?;
+        defer windows.CloseHandle(mapped_in_file);
 
-            operation_slot.self.available_operation_slots.appendAssumeCapacity(operation_slot.pending_operation.?.slot_idx);
-            operation_slot.pending_operation = null;
+        var in_data_ptr_maybe = kernel32_extra.MapViewOfFile(mapped_in_file, windows.SECTION_MAP_READ, 0, 0, in_file_len);
+        if (in_data_ptr_maybe == null) {
+            var last_err = windows.kernel32.GetLastError();
+            std.log.err("Failed to MapViewOfFile for input. Error: {}", .{last_err});
+            return error.Unexpected;
         }
-    };
 
-    var buffer = allocator.alloc(u8, num_bytes) catch return PatchIO.PatchIOErrors.OutOfMemory;
+        var in_data_ptr = in_data_ptr_maybe.?;
+        defer _ = kernel32_extra.UnmapViewOfFile(in_data_ptr);
 
-    operation.pending_operation = .{
-        .operation = .{
-            .CopyRange = .{
-                .allocator = allocator,
-                .out_file = out_file,
-                .in_file = in_file,
-                .out_file_offset = out_offset,
-                .in_file_offset = in_offset,
-                .buffer = buffer,
-            },
-        },
-        .callback = callback,
-        .callback_context = callback_ctx,
-        .slot_idx = slot_idx,
-        .overlapped = undefined,
-    };
+        @memcpy(@as([*]u8, @ptrCast(out_data_ptr))[write_offset .. write_offset + in_file_len], @as([*]u8, @ptrCast(in_data_ptr))[0..in_file_len]);
+        write_offset += in_file_len;
+    }
 
-    try readFile(implementation, in_file, in_offset, buffer, ReadCompleteCallbackWrapper.ioReadCallback, @ptrCast(operation));
+    _ = allocator;
+    _ = callback;
+    _ = callback_ctx;
+    _ = self;
 }
 
 pub fn createFile(implementation: PatchIO.Implementation, parent_dir: PlatformHandle, file_path: []const u8) PatchIO.PatchIOErrors!PatchIO.PlatformHandle {
@@ -629,7 +636,7 @@ pub fn create(working_dir: std.fs.Dir, allocator: std.mem.Allocator) PatchIO.Pat
         .create_file = createFile,
         .read_file = readFile,
         .write_file = writeFile,
-        .copy_file_range = copyFileRange,
+        .merge_files = mergeFiles,
         .tick = tick,
     };
 

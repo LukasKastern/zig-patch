@@ -259,6 +259,12 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 }
 
                 self.write_buffer.written_bytes = deflated_data.len + @sizeOf(usize);
+
+                const cluster_alignment = 1024 * 4;
+
+                if (self.write_buffer.written_bytes % cluster_alignment != 0) {
+                    self.write_buffer.written_bytes += (cluster_alignment - self.write_buffer.written_bytes % cluster_alignment);
+                }
             }
 
             self.has_active_task.store(0, .Release);
@@ -314,7 +320,14 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         break :blk files;
     };
     defer {}
-    defer allocator.free(patch_files);
+    defer {
+        for(patch_files) |patch_file| {
+            var zig_file = std.fs.File{.handle = patch_file};
+            zig_file.close();
+        }
+
+        allocator.free(patch_files);
+    }
 
     const max_num_write_buffers = thread_pool.max_threads * 4;
 
@@ -562,8 +575,6 @@ pub fn assemblePatchFromFilesV2(patch_io: *PatchIO, patch_files: []PatchIO.Platf
     var patch = std.fs.File{ .handle = patch_handle };
     defer patch.close();
 
-    var patch_writer = patch.writer();
-
     var read_buffer = try allocator.alloc(u8, options.max_work_unit_size + 8096);
     defer allocator.free(read_buffer);
 
@@ -573,64 +584,18 @@ pub fn assemblePatchFromFilesV2(patch_io: *PatchIO, patch_files: []PatchIO.Platf
     var num_files = numRealFilesInPatch(new_signature);
     try patch_file.sections.resize(num_files);
 
-    try patch.seekTo(0);
-
-    const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
-    var buffered_file_writer: BufferedFileWriter = .{
-        .unbuffered_writer = patch_writer,
-    };
-
-    var buffered_writer = buffered_file_writer.writer();
-
     if (progress_callback) |progress_callback_unwrapped| {
         progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, 0.0, "Assembling Patch");
     }
 
-    // Write the header once without the actual file data.
-    // The file data will be populated in the loop below.
-    // Once all the data is written we go back to the start of the file and write the proper data.
-    try patch_file.savePatchHeader(buffered_writer);
-    try buffered_file_writer.flush();
-https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_duplicate_extents_to_file
-    var reserved_header_bytes = try patch.getPos();
-
-    var offset_in_file: usize = reserved_header_bytes;
-
+    var offset_in_file: usize = 0;
     var patch_file_size: usize = 0;
-    for (patch_files) |file| {
-        var f = std.fs.File{
-            .handle = file,
-        };
-
-        patch_file_size += try f.getEndPos();
-    }
-
-    try patch.setEndPos(reserved_header_bytes + patch_file_size);
 
     var file_idx: usize = 0;
     var file_idx_in_patch: usize = 0;
     var patch_file_idx: usize = 0;
 
-    var num_remaining_patches_to_wait_for: usize = 0;
-
-    const CopyPatchFileIOWrapper = struct {
-        num_patches: *usize,
-
-        fn copyCompleteCallback(ctx: *anyopaque) void {
-            var self: *@This() = @ptrCast(@alignCast(ctx));
-            self.num_patches.* -= 1;
-        }
-    };
-
-    var io_wrappers = try allocator.alloc(CopyPatchFileIOWrapper, patch_files.len);
-    defer allocator.free(io_wrappers);
-
     while (file_idx_in_patch < num_files) : (file_idx_in_patch += 1) {
-        if (progress_callback) |progress_callback_unwrapped| {
-            var progress = @as(f32, @floatFromInt(file_idx_in_patch)) / @as(f32, @floatFromInt(num_files));
-            progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, progress * 100.0, "Assembling Patch");
-        }
-
         while (new_signature.getFile(file_idx).size == 0) {
             file_idx += 1;
 
@@ -647,14 +612,8 @@ https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_d
         var num_patch_file: usize = 0;
         while (num_patch_file < num_parts) : (num_patch_file += 1) {
             var file_handle = patch_files[patch_file_idx];
-            var io_wrapper = &io_wrappers[patch_file_idx];
-            io_wrapper.num_patches = &num_remaining_patches_to_wait_for;
 
             patch_file_idx += 1;
-
-            num_remaining_patches_to_wait_for += 1;
-
-            var temp_allocator = std.heap.FixedBufferAllocator.init(read_buffer);
 
             var f = std.fs.File{
                 .handle = file_handle,
@@ -662,34 +621,40 @@ https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_d
 
             var end_pos = try f.getEndPos();
 
-            try patch_io.copyFileRange(
-                patch.handle,
-                file_handle,
-                offset_in_file,
-                0,
-                end_pos,
-                CopyPatchFileIOWrapper.copyCompleteCallback,
-                io_wrapper,
-                temp_allocator.allocator(),
-            );
-
             offset_in_file += end_pos;
+            patch_file_size += end_pos;
         }
 
         file_idx += 1;
     }
 
-    while (num_remaining_patches_to_wait_for != 0) {
-        patch_io.tick();
+    var temp_serialization_buffer = try allocator.alloc(u8, 1024*1024*16);
+    defer allocator.free(temp_serialization_buffer);
+
+    var stream = std.io.fixedBufferStream(temp_serialization_buffer);
+    var memory_writer = stream.writer();
+    try patch_file.savePatchHeader(memory_writer);
+    
+    var written_bytes = stream.getPos() catch unreachable;
+    try patch.setEndPos(written_bytes);
+
+    const WriteHeaderIOWrapper = struct {
+        is_complete: bool, 
+
+        fn callback(ctx: *anyopaque) void {
+            var wrapper : *@This() = @ptrCast(@alignCast(ctx));
+            wrapper.is_complete = true;
+        }
+    };
+
+    var io_wrapper = WriteHeaderIOWrapper{.is_complete = false};
+    try patch_io.writeFile(patch_handle, 0, temp_serialization_buffer[0..written_bytes], WriteHeaderIOWrapper.callback, &io_wrapper,);
+
+    while(!io_wrapper.is_complete) {
+        patch_io.tick();    
     }
 
-    try patch.seekTo(0);
-    try patch_file.savePatchHeader(buffered_writer);
-    try buffered_file_writer.flush();
-
-    if (try patch.getPos() != reserved_header_bytes) {
-        return error.ReservedHeaderSizeMismatchesWrittenLen;
-    }
+    try patch_io.mergeFiles(patch_handle, patch_files, patch_file_size, undefined, undefined, undefined);
 
     if (stats) |stats_unwrapped| {
         stats_unwrapped.total_patch_size_bytes = offset_in_file;
