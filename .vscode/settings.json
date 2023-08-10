@@ -9,5 +9,6 @@
     "zig-cache/": true,
     "zig-out/": true
   },
-  "cmake.configureOnOpen": false
+  "cmake.configureOnOpen": false,
+  "zig.zigPath": "C:\\Zig\\zig.exe"
 }

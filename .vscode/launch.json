@@ -7,10 +7,14 @@
       "windows": {
         "type": "cppvsdbg"
       },
-      "request": "launch",  
+      "request": "launch",
       "program": "${workspaceFolder}/zig-out/bin/zig-patch.exe",
       // "args": ["create", "--source_folder", "${input:selectFolder}"],
-      "args": ["create", "--source_folder", "D:/Projects/Journee/JourneeDevelopment/Windows"],
+      "args": [
+        "create",
+        "--source_folder",
+        "C:/ovbuild/Windows"
+      ],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -32,7 +36,13 @@
       },
       "request": "launch",
       "program": "${workspaceFolder}/zig-out/bin/zig-patch.exe",
-      "args": ["make_signature", "--source_folder", "D:/Projects/Journee/seat/JourneeBUild3/Windows", "--output_file", "D:/Projects/Personal/zig-patch/zig-out/bin/Signature"],
+      "args": [
+        "make_signature",
+        "--source_folder",
+        "D:/Projects/Journee/seat/JourneeBUild3/Windows",
+        "--output_file",
+        "D:/Projects/Personal/zig-patch/zig-out/bin/Signature"
+      ],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -48,7 +58,13 @@
       },
       "request": "launch",
       "program": "${workspaceFolder}/zig-out/bin/zig-patch.exe",
-      "args": ["apply", "--patch", "${workspaceFolder}/zig-out/bin/Patch.pwd", "--target_folder", "D:/Users/Administrator/Downloads/PatchedFolder/Build"],
+      "args": [
+        "apply",
+        "--patch",
+        "${workspaceFolder}/zig-out/bin/Patch.pwd",
+        "--target_folder",
+        "D:/Users/Administrator/Downloads/PatchedFolder/Build"
+      ],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}/zig-out/bin/",
       "environment": [],
@@ -70,8 +86,7 @@
       },
       "request": "launch",
       "program": "${workspaceFolder}/zig-out/bin/test.exe",
-      "args": [
-      ],
+      "args": [],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",
       "environment": [],
