@@ -103,108 +103,8 @@ fn ParallelList(comptime T: type) type {
 }
 
 pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
-    // _ = progress_callback;
-    // _ = stats;
-    // _ = thread_pool;
     var anchored_block_map = try AnchoredBlocksMap.init(old_signature, allocator);
     defer anchored_block_map.deinit();
-
-    // const GeneratePatchData = struct {
-    //     const OutputBuffer = struct {
-    //         const OutputBufferState = enum(u8) {
-    //             Available,
-    //             UsedByWorker,
-    //             WritingToFile,
-    //         };
-
-    //         backing_buffer: []u8,
-    //         state: std.atomic.Atomic(u8),
-    //     };
-
-    //     output_buffers: []OutputBuffer,
-
-    //     next_file_idx: usize,
-
-    //     is_any_task_done: std.atomic.Atomic(u8).init(false),
-
-    //     active_patch_tasks: []FilePatchTask,
-
-    //     const FilePatchTask = struct {
-    //         const ReadBuffer = struct {
-    //             const ReadBufferState = enum(u8) {
-    //                 Available,
-    //                 HasData,
-    //                 DataPending,
-    //             };
-
-    //             data: []u8,
-    //             state: std.atomic.Atomic(u8),
-    //         };
-
-    //         const ReadBuffers = struct {
-    //             on_new_buffer: std.Thread.Semaphore,
-    //             buffers: []u8,
-    //         };
-
-    //         file_idx: usize,
-
-    //         is_done: std.atomic.Atomic(bool).init(false),
-    //     };
-    // };
-
-    // var patch_files: []PatchIO.PlatformHandle = blk: {
-    //     var num_files: usize = 0;
-    //     var next_file: usize = 0;
-
-    //     while (next_file < new_signature.numFiles()) {
-
-    //         // Skip empty files.
-    //         while (new_signature.getFile(next_file).size == 0) {
-    //             next_file += 1;
-    //         }
-
-    //         var file_size = new_signature.getFile(next_file).size;
-    //         num_files += @as(usize, @intFromFloat(@ceil(@as(f32, @floatFromInt(file_size)) / DefaultMaxWorkUnitSize)));
-
-    //         next_file += 1;
-    //     }
-
-    //     var files = try allocator.alloc(PatchIO.PlatformHandle, num_files);
-    //     var patch_file_idx: usize = 0;
-
-    //     while (patch_file_idx < num_files) : (patch_file_idx += 1) {
-    //         var name_buffer: [128]u8 = undefined;
-    //         var name = std.fmt.bufPrint(&name_buffer, "P_{}", .{patch_file_idx}) catch unreachable;
-
-    //         files[patch_file_idx] = try patch_io.createFile(options.staging_dir.fd, name);
-    //     }
-
-    //     break :blk files;
-    // };
-    // defer {
-    //     for (patch_files) |patch_file| {
-    //         var zig_file = std.fs.File{ .handle = patch_file };
-    //         zig_file.close();
-    //     }
-
-    //     allocator.free(patch_files);
-    // }
-
-    // const generate_patch_data = GeneratePatchData{};
-
-    // var is_patch_done = false;
-    // while (!is_patch_done) {
-    //     // Check if a
-
-    //     var is_any_task_done = generate_patch_data.is_any_task_done.compareAndSwap(true, false, .Acquire, .Unordered) == null;
-    //     if (is_any_task_done) {
-
-    //     }
-
-    //     // if (generate_patch_data.next_file_idx < patch_files.len) {}
-    // }
-    // _ = patch_stats;
-
     const ProgressData = struct {
         progress_callback: ?ProgressCallback,
         total_patch_files: usize,
@@ -221,6 +121,9 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         is_io_pending: bool,
         is_task_done: bool,
         progress_data: *ProgressData,
+        has_pending_write: *bool,
+
+        write_start_time: i128,
         // sequence: usize,
     };
 
@@ -230,12 +133,12 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         read_start_time: i128,
     };
 
-    const num_read_buffers = 16;
+    const num_read_buffers = thread_pool.num_threads * 2;
 
     const PerThreadWorkingBufferSize = DefaultMaxWorkUnitSize * 2;
 
     const PatchGenerationTaskState = struct {
-        read_buffers: [num_read_buffers]ReadBuffer,
+        read_buffers: []ReadBuffer,
         per_thread_working_buffers: [][PerThreadWorkingBufferSize]u8,
         signature: *const SignatureFile,
         block_map: *AnchoredBlocksMap,
@@ -243,6 +146,9 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
     var task_state = try allocator.create(PatchGenerationTaskState);
     defer allocator.destroy(task_state);
+
+    task_state.read_buffers = try allocator.alloc(ReadBuffer, num_read_buffers);
+    defer allocator.free(task_state.read_buffers);
 
     var available_read_buffers = try std.ArrayList(usize).initCapacity(allocator, num_read_buffers);
     defer available_read_buffers.deinit();
@@ -372,9 +278,10 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         }
     };
 
-    const max_simulatenous_patch_generation_operations = 4;
+    const max_simulatenous_patch_generation_operations = thread_pool.max_threads;
 
-    var operation_slots: [max_simulatenous_patch_generation_operations]ActivePatchGenerationOperation = undefined;
+    var operation_slots = try allocator.alloc(ActivePatchGenerationOperation, max_simulatenous_patch_generation_operations);
+    defer allocator.free(operation_slots);
 
     var available_operation_slots = try std.ArrayList(usize).initCapacity(allocator, max_simulatenous_patch_generation_operations);
     defer available_operation_slots.deinit();
@@ -390,44 +297,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
     task_state.block_map = anchored_block_map;
     task_state.per_thread_working_buffers = try allocator.alloc([PerThreadWorkingBufferSize]u8, thread_pool.max_threads * 2);
     defer allocator.free(task_state.per_thread_working_buffers);
-
-    var patch_files: []PatchIO.PlatformHandle = blk: {
-        var num_files: usize = 0;
-        var next_file: usize = 0;
-
-        while (next_file < new_signature.numFiles()) {
-
-            // Skip empty files.
-            while (new_signature.getFile(next_file).size == 0) {
-                next_file += 1;
-            }
-
-            var file_size = new_signature.getFile(next_file).size;
-            num_files += @as(usize, @intFromFloat(@ceil(@as(f32, @floatFromInt(file_size)) / DefaultMaxWorkUnitSize)));
-
-            next_file += 1;
-        }
-
-        var files = try allocator.alloc(PatchIO.PlatformHandle, num_files);
-        var patch_file_idx: usize = 0;
-
-        while (patch_file_idx < num_files) : (patch_file_idx += 1) {
-            var name_buffer: [128]u8 = undefined;
-            var name = std.fmt.bufPrint(&name_buffer, "P_{}", .{patch_file_idx}) catch unreachable;
-
-            files[patch_file_idx] = try patch_io.createFile(options.staging_dir.fd, name);
-        }
-
-        break :blk files;
-    };
-    defer {
-        for (patch_files) |patch_file| {
-            var zig_file = std.fs.File{ .handle = patch_file };
-            zig_file.close();
-        }
-
-        allocator.free(patch_files);
-    }
 
     const max_num_write_buffers = thread_pool.max_threads * 2;
 
@@ -449,56 +318,66 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         .num_completed_patches = 0,
     };
 
-    const patch_file = patch_files[0];
+    const patch_handle = try patch_io.createFile(options.staging_dir.fd, "Patch.pwd");
+
+    const patch = std.fs.File{ .handle = patch_handle };
+    defer patch.close();
+
     var patch_file_offset: usize = 0;
 
-    while (next_file_idx < new_signature.numFiles() or active_patch_generation_operations.items.len > 0) {
-        while (available_operation_slots.items.len > 0) {
-            while (next_file_idx < new_signature.numFiles()) {
-                if (new_signature.getFile(next_file_idx).size != 0) {
+    var has_pending_write = false;
+
+    generate_patch_loop: while (true) {
+        if (next_file_idx < new_signature.numFiles() or active_patch_generation_operations.items.len > 0) {
+            while (available_operation_slots.items.len > 0) {
+                while (next_file_idx < new_signature.numFiles()) {
+                    if (new_signature.getFile(next_file_idx).size != 0) {
+                        break;
+                    }
+
+                    next_file_idx += 1;
+                }
+
+                if (next_file_idx == new_signature.numFiles()) {
+                    // Reached last operation.
                     break;
                 }
+
+                var file = new_signature.getFile(next_file_idx);
+
+                var slot = available_operation_slots.orderedRemove(available_operation_slots.items.len - 1);
+                active_patch_generation_operations.appendAssumeCapacity(slot);
+
+                operation_slots[slot] = .{
+                    .state = task_state,
+                    .next_sequence = 0,
+                    .target_file = next_file_idx,
+                    .sequence = 0,
+                    .write_buffer = null,
+                    .current_read_buffer = null,
+                    .next_read_buffer = null,
+                    .first_sequence_patch_file_idx = patch_file_idx,
+                    .has_active_task = std.atomic.Atomic(u32).init(0),
+                    .task = .{
+                        .callback = ActivePatchGenerationOperation.generatePatchTask,
+                    },
+                    .generate_operations_state = undefined,
+                    .stats = .{},
+                    .start_time = std.time.nanoTimestamp(),
+                };
+                operation_slots[slot].generate_operations_state.init(file.size);
+
+                var file_size = new_signature.getFile(next_file_idx).size;
+                patch_file_idx += @as(usize, @intFromFloat(@ceil(@as(f32, @floatFromInt(file_size)) / DefaultMaxWorkUnitSize)));
 
                 next_file_idx += 1;
             }
 
-            if (next_file_idx == new_signature.numFiles()) {
-                // Reached last operation.
-                break;
-            }
+            schedule_buffer_reads: for (active_patch_generation_operations.items) |operation_idx| {
+                if (available_read_buffers.items.len == 0) {
+                    break :schedule_buffer_reads;
+                }
 
-            var file = new_signature.getFile(next_file_idx);
-
-            var slot = available_operation_slots.orderedRemove(available_operation_slots.items.len - 1);
-            active_patch_generation_operations.appendAssumeCapacity(slot);
-
-            operation_slots[slot] = .{
-                .state = task_state,
-                .next_sequence = 0,
-                .target_file = next_file_idx,
-                .sequence = 0,
-                .write_buffer = null,
-                .current_read_buffer = null,
-                .next_read_buffer = null,
-                .first_sequence_patch_file_idx = patch_file_idx,
-                .has_active_task = std.atomic.Atomic(u32).init(0),
-                .task = .{
-                    .callback = ActivePatchGenerationOperation.generatePatchTask,
-                },
-                .generate_operations_state = undefined,
-                .stats = .{},
-                .start_time = std.time.nanoTimestamp(),
-            };
-            operation_slots[slot].generate_operations_state.init(file.size);
-
-            var file_size = new_signature.getFile(next_file_idx).size;
-            patch_file_idx += @as(usize, @intFromFloat(@ceil(@as(f32, @floatFromInt(file_size)) / DefaultMaxWorkUnitSize)));
-
-            next_file_idx += 1;
-        }
-
-        if (available_read_buffers.items.len > 0) {
-            for (active_patch_generation_operations.items) |operation_idx| {
                 var active_operation = &operation_slots[operation_idx];
 
                 if (active_operation.next_read_buffer == null) {
@@ -533,118 +412,122 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     std.log.debug("Reading buffer for file: {}", .{active_operation.target_file});
                     var file_handle = new_signature.data.?.OnDiskSignatureFile.locked_directory.files.items[active_operation.target_file].handle;
                     try patch_io.readFile(file_handle, current_start_offset, &read_buffer.data, IOCallbackWrapper.ioCallback, read_buffer);
-
-                    break;
                 }
             }
-        }
 
-        var idx: isize = 0;
-        while (idx < active_patch_generation_operations.items.len) : (idx += 1) {
-            var operation_idx = active_patch_generation_operations.items[@as(usize, @intCast(idx))];
+            var idx: isize = 0;
+            while (idx < active_patch_generation_operations.items.len) : (idx += 1) {
+                var operation_idx = active_patch_generation_operations.items[@as(usize, @intCast(idx))];
 
-            var active_operation = &operation_slots[operation_idx];
-            var is_task_running = active_operation.has_active_task.load(.Acquire) != 0;
+                var active_operation = &operation_slots[operation_idx];
+                var is_task_running = active_operation.has_active_task.load(.Acquire) != 0;
 
-            if (is_task_running) {
-                continue;
-            }
-
-            var next_start_offset = active_operation.next_sequence * DefaultMaxWorkUnitSize;
-            var file_size = new_signature.getFile(active_operation.target_file).size;
-
-            // Free the previously worked on buffer.
-            if (active_operation.current_read_buffer) |last_buffer| {
-                available_read_buffers.appendAssumeCapacity(last_buffer);
-                active_operation.current_read_buffer = null;
-
-                var write_buffer = active_operation.write_buffer.?;
-
-                var is_operation_done = next_start_offset >= file_size;
-
-                {
-                    var can_write_buffer_fit_another_patch = write_buffer.buffer.len - write_buffer.written_bytes > MaxOperationOutputSize;
-
-                    write_buffer.is_task_done = is_operation_done or !can_write_buffer_fit_another_patch;
-
-                    if (write_buffer.is_task_done) {
-                        active_operation.write_buffer = null;
-                    }
-                }
-
-                if (stats) |stats_unwrapped| {
-                    stats_unwrapped.total_blocks += active_operation.stats.total_blocks;
-                    stats_unwrapped.num_new_bytes += active_operation.stats.num_new_bytes;
-                    stats_unwrapped.changed_blocks += active_operation.stats.changed_blocks;
-                }
-
-                if (is_operation_done) {
-                    std.log.debug(
-                        "Operation for file: {} completed in {}ms",
-                        .{ active_operation.target_file, @divTrunc(std.time.nanoTimestamp() - active_operation.start_time, std.time.ns_per_ms) },
-                    );
-
-                    active_operation.write_buffer = null;
-
-                    available_operation_slots.appendAssumeCapacity(operation_idx);
-                    _ = active_patch_generation_operations.swapRemove(@as(usize, @intCast(idx)));
-                    idx -= 1;
+                if (is_task_running) {
                     continue;
                 }
-            }
 
-            // If the next buffer is ready schedule the processing task.
-            if (active_operation.next_read_buffer) |next_buffer| {
-                if (task_state.read_buffers[next_buffer].is_ready) {
-                    if (active_operation.write_buffer == null) {
-                        active_operation.write_buffer = blk: {
-                            for (write_buffers.items) |write_buffer| {
-                                if (!write_buffer.is_io_pending) {
-                                    write_buffer.is_io_pending = true;
-                                    write_buffer.is_task_done = false;
-                                    write_buffer.written_bytes = 0;
-                                    break :blk write_buffer;
-                                }
-                            }
+                var next_start_offset = active_operation.next_sequence * DefaultMaxWorkUnitSize;
+                var file_size = new_signature.getFile(active_operation.target_file).size;
 
-                            if (write_buffers.items.len > max_num_write_buffers) {
-                                continue;
-                            }
+                // Free the previously worked on buffer.
+                if (active_operation.current_read_buffer) |last_buffer| {
+                    available_read_buffers.appendAssumeCapacity(last_buffer);
+                    active_operation.current_read_buffer = null;
 
-                            var write_buffer = try allocator.create(WriteBuffer);
-                            write_buffer.* = .{
-                                .written_bytes = 0,
-                                .is_io_pending = true,
-                                .is_task_done = false,
-                                .buffer = undefined,
-                                .progress_data = &progress_data,
-                            };
-                            try write_buffers.append(write_buffer);
+                    var write_buffer = active_operation.write_buffer.?;
 
-                            break :blk write_buffer;
-                        };
+                    var is_operation_done = next_start_offset >= file_size;
+
+                    {
+                        var can_write_buffer_fit_another_patch = write_buffer.buffer.len - write_buffer.written_bytes > MaxOperationOutputSize;
+
+                        write_buffer.is_task_done = is_operation_done or !can_write_buffer_fit_another_patch;
+
+                        if (write_buffer.is_task_done) {
+                            active_operation.write_buffer = null;
+                        }
                     }
 
-                    active_operation.current_read_buffer = next_buffer;
-                    active_operation.next_read_buffer = null;
+                    if (stats) |stats_unwrapped| {
+                        stats_unwrapped.total_blocks += active_operation.stats.total_blocks;
+                        stats_unwrapped.num_new_bytes += active_operation.stats.num_new_bytes;
+                        stats_unwrapped.changed_blocks += active_operation.stats.changed_blocks;
+                    }
 
-                    active_operation.sequence = active_operation.next_sequence;
-                    active_operation.next_sequence += 1;
+                    if (is_operation_done) {
+                        std.log.debug(
+                            "Operation for file: {} completed in {}ms",
+                            .{ active_operation.target_file, @divTrunc(std.time.nanoTimestamp() - active_operation.start_time, std.time.ns_per_ms) },
+                        );
 
-                    active_operation.has_active_task.store(1, .Release);
+                        active_operation.write_buffer = null;
 
-                    thread_pool.schedule(ThreadPool.Batch.from(&active_operation.task));
+                        available_operation_slots.appendAssumeCapacity(operation_idx);
+                        _ = active_patch_generation_operations.swapRemove(@as(usize, @intCast(idx)));
+                        idx -= 1;
+                        continue;
+                    }
+                }
+
+                // If the next buffer is ready schedule the processing task.
+                if (active_operation.next_read_buffer) |next_buffer| {
+                    if (task_state.read_buffers[next_buffer].is_ready) {
+                        if (active_operation.write_buffer == null) {
+                            active_operation.write_buffer = blk: {
+                                for (write_buffers.items) |write_buffer| {
+                                    if (!write_buffer.is_io_pending) {
+                                        write_buffer.is_io_pending = true;
+                                        write_buffer.is_task_done = false;
+                                        write_buffer.written_bytes = 0;
+                                        break :blk write_buffer;
+                                    }
+                                }
+
+                                if (write_buffers.items.len > max_num_write_buffers) {
+                                    continue;
+                                }
+
+                                var write_buffer = try allocator.create(WriteBuffer);
+                                write_buffer.* = .{
+                                    .written_bytes = 0,
+                                    .is_io_pending = true,
+                                    .is_task_done = false,
+                                    .buffer = undefined,
+                                    .progress_data = &progress_data,
+                                    .has_pending_write = undefined,
+                                    .write_start_time = undefined,
+                                };
+                                try write_buffers.append(write_buffer);
+
+                                break :blk write_buffer;
+                            };
+                        }
+
+                        active_operation.current_read_buffer = next_buffer;
+                        active_operation.next_read_buffer = null;
+
+                        active_operation.sequence = active_operation.next_sequence;
+                        active_operation.next_sequence += 1;
+
+                        active_operation.has_active_task.store(1, .Release);
+
+                        thread_pool.schedule(ThreadPool.Batch.from(&active_operation.task));
+                    }
                 }
             }
         }
 
-        for (write_buffers.items) |write_buffer| {
+        write_buffers_to_disk: for (write_buffers.items) |write_buffer| {
+            if (has_pending_write) {
+                break :write_buffers_to_disk;
+            }
+
             if (!write_buffer.is_task_done) {
-                continue;
+                continue :write_buffers_to_disk;
             }
 
             if (!write_buffer.is_io_pending) {
-                continue;
+                continue :write_buffers_to_disk;
             }
 
             // Write the patch file to disk.
@@ -655,9 +538,20 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
                     buffer.is_task_done = false;
                     buffer.is_io_pending = false;
-                    buffer.written_bytes = ~@as(usize, 0);
 
+                    buffer.has_pending_write.* = false;
                     buffer.progress_data.num_completed_patches += 1;
+
+                    var write_end_time = std.time.nanoTimestamp();
+                    std.log.debug(
+                        "Wrote {} bytes in {}ms ",
+                        .{
+                            buffer.written_bytes,
+                            @divTrunc(write_end_time - buffer.write_start_time, std.time.ns_per_ms),
+                        },
+                    );
+
+                    buffer.written_bytes = ~@as(usize, 0);
 
                     if (buffer.progress_data.progress_callback) |progress_callback_unwrapped| {
                         var elapsed_progress = (@as(f32, @floatFromInt(buffer.progress_data.num_completed_patches)) / @as(f32, @floatFromInt(buffer.progress_data.total_patch_files))) * 100;
@@ -672,8 +566,13 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 write_buffer.written_bytes += (cluster_alignment - write_buffer.written_bytes % cluster_alignment);
             }
 
+            has_pending_write = true;
+
+            write_buffer.write_start_time = std.time.nanoTimestamp();
+            write_buffer.has_pending_write = &has_pending_write;
+
             try patch_io.writeFile(
-                patch_file,
+                patch_handle,
                 patch_file_offset,
                 write_buffer.buffer[0..write_buffer.written_bytes],
                 IOWriteCallbackWrapper.ioCallback,
@@ -681,29 +580,25 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             );
 
             patch_file_offset += write_buffer.written_bytes;
+            break :write_buffers_to_disk;
+        }
+
+        // Wait till all patch files are written to disk.
+        {
+            var has_pending_writes = false;
+            for (write_buffers.items) |write_buffer| {
+                has_pending_writes = has_pending_writes or write_buffer.is_io_pending;
+            }
+
+            var has_more_operations = active_patch_generation_operations.items.len != 0 or next_file_idx < new_signature.numFiles();
+
+            if (!has_pending_writes and !has_more_operations) {
+                break :generate_patch_loop;
+            }
         }
 
         patch_io.tick();
     }
-
-    // Wait till all patch files are written to disk.
-    while (true) {
-        var has_pending_writes = false;
-        for (write_buffers.items) |write_buffer| {
-            has_pending_writes = has_pending_writes or write_buffer.is_io_pending;
-        }
-
-        if (!has_pending_writes) {
-            break;
-        }
-
-        patch_io.tick();
-    }
-
-    assemblePatchFromFilesV2(patch_io, patch_files, new_signature, old_signature, options.staging_dir, allocator, options, stats, progress_callback) catch |e| {
-        std.log.err("Failed to assemble patch from files. Error: {s}", .{@errorName(e)});
-        return;
-    };
 }
 
 fn numPatchFilesNeeded(signature: *SignatureFile, work_unit_size: usize) usize {
