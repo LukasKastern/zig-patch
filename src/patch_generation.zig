@@ -113,7 +113,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
     //TODO: This should be MaxWorkUnitSize / MaxDataOpLen or something like
     const MaxOperationOverhead = 1024;
-
     const MaxOperationOutputSize = DefaultMaxWorkUnitSize + MaxOperationOverhead;
     const WriteBufferSize = MaxOperationOutputSize * 10;
 
@@ -130,6 +129,11 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         has_pending_write: *bool,
 
         write_start_time: i128,
+
+        first_block_taken_from_reference: usize,
+        last_block_taken_from_reference: usize,
+
+        const InvalidRangeOperation = ~@as(usize, 0);
     };
 
     const ReadBuffer = struct {
@@ -279,6 +283,33 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 self.write_buffer.?.written_bytes = prev_offset + deflated_data.len + @sizeOf(usize);
             }
 
+            var first_range_operation_block = WriteBuffer.InvalidRangeOperation;
+            var last_range_operation_block = WriteBuffer.InvalidRangeOperation;
+
+            for (operations.items) |operation| {
+                switch (operation) {
+                    .BlockRange => |range_op| {
+                        if (first_range_operation_block == WriteBuffer.InvalidRangeOperation) {
+                            first_range_operation_block = range_op.block_index;
+                        }
+
+                        last_range_operation_block = range_op.block_index + range_op.block_span;
+
+                        self.stats.total_blocks += operation.BlockRange.block_index;
+                    },
+                    else => {},
+                }
+            }
+
+            //
+            if (self.write_buffer.?.first_block_taken_from_reference == WriteBuffer.InvalidRangeOperation) {
+                self.write_buffer.?.first_block_taken_from_reference = first_range_operation_block;
+            }
+
+            if (last_range_operation_block != WriteBuffer.InvalidRangeOperation) {
+                self.write_buffer.?.last_block_taken_from_reference = last_range_operation_block;
+            }
+
             self.has_active_task.store(0, .Release);
         }
     };
@@ -319,7 +350,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
     var progress_data = ProgressData{
         .progress_callback = progress_callback,
-        .total_num_tasks = numPatchFilesNeeded(new_signature, DefaultMaxWorkUnitSize),
+        .total_num_tasks = numTasksNeeded(new_signature, DefaultMaxWorkUnitSize),
         .tasks_completed = 0,
     };
 
@@ -521,11 +552,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
                                 for (write_buffers.items) |write_buffer| {
                                     if (!write_buffer.is_io_pending) {
-                                        write_buffer.is_io_pending = true;
-                                        write_buffer.is_task_done = false;
-                                        write_buffer.written_bytes = 0;
-                                        write_buffer.start_sequence = active_operation.next_sequence;
-                                        write_buffer.file_idx = active_operation.target_file;
                                         maybe_write_buffer = write_buffer;
                                         break;
                                     }
@@ -551,7 +577,15 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                             };
                         }
 
-                        if (active_operation.write_buffer != null) {
+                        if (active_operation.write_buffer) |write_buffer| {
+                            write_buffer.is_io_pending = true;
+                            write_buffer.is_task_done = false;
+                            write_buffer.written_bytes = 0;
+                            write_buffer.start_sequence = active_operation.next_sequence;
+                            write_buffer.file_idx = active_operation.target_file;
+                            write_buffer.first_block_taken_from_reference = WriteBuffer.InvalidRangeOperation;
+                            write_buffer.last_block_taken_from_reference = WriteBuffer.InvalidRangeOperation;
+
                             active_operation.current_read_buffer = next_buffer;
                             active_operation.next_read_buffer = null;
 
@@ -572,18 +606,38 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Generating Patches");
         }
 
-        write_buffers_to_disk: for (write_buffers.items) |write_buffer| {
-            if (has_pending_write) {
-                break :write_buffers_to_disk;
+        if (!has_pending_write) write_buffer_to_disk: {
+            var buffer_to_write = blk: {
+                var buffer_to_write: ?*WriteBuffer = null;
+
+                for (write_buffers.items) |write_buffer| {
+                    if (!write_buffer.is_task_done) {
+                        continue;
+                    }
+
+                    if (!write_buffer.is_io_pending) {
+                        continue;
+                    }
+
+                    if (buffer_to_write) |unwrapped_buffer| {
+                        // Buffers that point towards the same file need to be written in order.
+                        // This is required by the way the patch is applied.
+                        if (unwrapped_buffer.file_idx == write_buffer.file_idx and unwrapped_buffer.start_sequence > write_buffer.start_sequence) {
+                            buffer_to_write = write_buffer;
+                        }
+                    } else {
+                        buffer_to_write = write_buffer;
+                    }
+                }
+
+                break :blk buffer_to_write;
+            };
+
+            if (buffer_to_write == null) {
+                break :write_buffer_to_disk;
             }
 
-            if (!write_buffer.is_task_done) {
-                continue :write_buffers_to_disk;
-            }
-
-            if (!write_buffer.is_io_pending) {
-                continue :write_buffers_to_disk;
-            }
+            var write_buffer = buffer_to_write.?;
 
             // Write the patch file to disk.
             const IOWriteCallbackWrapper = struct {
@@ -620,26 +674,27 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             write_buffer.write_start_time = std.time.nanoTimestamp();
             write_buffer.has_pending_write = &has_pending_write;
 
-            try patch_io.writeFile(
-                patch_handle,
-                patch_file_offset,
-                write_buffer.buffer[0..write_buffer.written_bytes],
-                IOWriteCallbackWrapper.ioCallback,
-                write_buffer,
-            );
+            var prev_offset = patch_file_offset;
+            patch_file_offset += write_buffer.written_bytes;
 
             patch_header.sections.appendAssumeCapacity(.{
                 .operations_start_pos_in_file = patch_file_offset,
                 .file_idx = write_buffer.file_idx,
                 .start_sequence = write_buffer.start_sequence,
+                .first_block_taken_from_reference = write_buffer.first_block_taken_from_reference,
+                .last_block_taken_from_reference = write_buffer.last_block_taken_from_reference,
             });
 
-            patch_file_offset += write_buffer.written_bytes;
-
-            break :write_buffers_to_disk;
+            try patch_io.writeFile(
+                patch_handle,
+                prev_offset,
+                write_buffer.buffer[0..write_buffer.written_bytes],
+                IOWriteCallbackWrapper.ioCallback,
+                write_buffer,
+            );
         }
 
-        // Wait till all patch files are written to disk.
+        // Check if we are done generating the patch.
         {
             var has_pending_writes = false;
             for (write_buffers.items) |write_buffer| {
@@ -655,9 +710,47 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
         patch_io.tick();
     }
+
+    // Serialize patch header
+    {
+        var counting_writer = std.io.CountingWriter(@TypeOf(std.io.null_writer)){
+            .bytes_written = 0,
+            .child_stream = std.io.null_writer,
+        };
+        try patch_header.savePatchHeader(counting_writer.writer());
+
+        var patch_header_mem = try allocator.alloc(u8, counting_writer.bytes_written);
+        defer allocator.free(patch_header_mem);
+
+        var stream = std.io.fixedBufferStream(patch_header_mem);
+        try patch_header.savePatchHeader(stream.writer());
+
+        var is_done = false;
+        const WriteHeaderCallback = struct {
+            fn callback(ctx: *anyopaque) void {
+                var is_done_from_ctx: *bool = @ptrCast(ctx);
+                is_done_from_ctx.* = true;
+            }
+        };
+
+        // Writing the file from zero with the proper section count will lead to some garbage data inbetween the end of our newly written data.
+        // And the first written section. But that shouldn't be a problem.
+        try patch_io.writeFile(
+            patch_handle,
+            0,
+            patch_header_mem,
+            WriteHeaderCallback.callback,
+            &is_done,
+        );
+
+        while (!is_done) {
+            patch_io.tick();
+            std.time.sleep(10 * std.time.ns_per_ms);
+        }
+    }
 }
 
-fn numPatchFilesNeeded(signature: *SignatureFile, work_unit_size: usize) usize {
+fn numTasksNeeded(signature: *SignatureFile, work_unit_size: usize) usize {
     var num_patch_files: usize = 0;
 
     var file_idx: usize = 0;

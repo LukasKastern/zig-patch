@@ -8,6 +8,8 @@ pub const FileSection = struct {
     file_idx: usize,
     operations_start_pos_in_file: usize,
     start_sequence: usize,
+    first_block_taken_from_reference: usize,
+    last_block_taken_from_reference: usize,
 };
 
 pub const PatchHeader = struct {

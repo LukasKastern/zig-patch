@@ -137,9 +137,28 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
         try @call(.never_inline, utils.copyFolder, .{ tmp_folder.?, source_folde_unwrapped });
     }
 
+    var patch_io = try PatchIO.init(cwd, allocator);
+    defer patch_io.deinit();
+
     try @call(.never_inline, ApplyPatch.createFileStructure, .{ tmp_folder.?, patch });
 
-    try @call(.never_inline, ApplyPatch.applyPatch, .{ cwd, source_folder, tmp_folder.?, patch_file_path, patch, thread_pool, allocator, config.progress_callback, apply_patch_stats });
+    try @call(
+        .never_inline,
+        ApplyPatch.applyPatch,
+        .{
+            cwd,
+            source_folder,
+            tmp_folder.?,
+            patch_file_path,
+            patch,
+            thread_pool,
+            allocator,
+            config.progress_callback,
+            &patch_io,
+            patch_file,
+            apply_patch_stats,
+        },
+    );
 
     if (source_folder) |*source_folder_unwrapped| {
         // If we already have a folder at the source path we back it up.
@@ -315,7 +334,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
     std.fs.deleteTreeAbsolute(staging_dir_path) catch |e| {
         std.log.err("Failed to delete staging dir. Error: {s}", .{@errorName(e)});
     };
-    
+
     std.log.info("The patch was generated successfully", .{});
 }
 
