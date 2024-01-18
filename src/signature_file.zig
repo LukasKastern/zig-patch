@@ -188,7 +188,7 @@ pub const SignatureFile = struct {
 
         var locked_folder = patch_io.lockDirectory(dir, self.allocator) catch |e| {
             std.log.err("Failed to lock directory \"{s}\". Error: {s}", .{ dir, @errorName(e) });
-            return error.SignatureFolderNotFound;
+            return error.SignatureFolderError;
         };
 
         errdefer patch_io.unlockDirectory(locked_folder);

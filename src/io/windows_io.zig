@@ -235,11 +235,11 @@ pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []
 
                             const rc = ntdll.NtCreateFile(
                                 &file_handle,
-                                windows.FILE_READ_DATA | windows.FILE_WRITE_DATA | windows.FILE_WRITE_ATTRIBUTES | @as(windows.ULONG, if (is_directory) windows.SYNCHRONIZE else windows.FILE_FLAG_OVERLAPPED), //DesiredAccess
+                                windows.GENERIC_READ | @as(windows.ULONG, if (is_directory) windows.SYNCHRONIZE else windows.FILE_FLAG_OVERLAPPED), //DesiredAccess
                                 &attr,
                                 &file_io,
                                 null, //AllocationSize
-                                0, // FileAttributes
+                                windows.FILE_ATTRIBUTE_NORMAL, // FileAttributes
                                 windows.FILE_SHARE_READ, // ShareAccess
                                 windows.FILE_OPEN, // CreateDisposition
                                 if (is_directory) windows.FILE_SYNCHRONOUS_IO_NONALERT else 0, // CreateOptions
@@ -248,7 +248,8 @@ pub fn lockDirectoryRecursively(implementation: PatchIO.Implementation, path: []
                             );
 
                             if (rc != .SUCCESS) {
-                                return windows.unexpectedStatus(rc);
+                                std.log.err("NtCreateFile for {s} failed with error {}", .{ file_name_buffer[0..end_idx], rc });
+                                return error.Unexpected;
                             }
 
                             if (!is_directory) {
