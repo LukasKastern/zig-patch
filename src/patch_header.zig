@@ -7,6 +7,7 @@ const BlockHash = @import("block.zig").BlockHash;
 pub const FileSection = struct {
     file_idx: usize,
     operations_start_pos_in_file: usize,
+    start_sequence: usize,
 };
 
 pub const PatchHeader = struct {
