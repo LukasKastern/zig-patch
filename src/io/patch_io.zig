@@ -56,6 +56,7 @@ pub const Implementation = struct {
     unlock_directory: *const fn (ImplSelf, locked_directory: LockedDirectory) void,
     destroy: *const fn (ImplSelf) void,
     create_file: *const fn (ImplSelf, PlatformHandle, []const u8) PatchIOErrors!PlatformHandle,
+    open_file: *const fn (ImplSelf, PlatformHandle, []const u8) PatchIOErrors!PlatformHandle,
     read_file: *const fn (ImplSelf, PlatformHandle, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
     write_file: *const fn (ImplSelf, PlatformHandle, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
     merge_files: *const fn (ImplSelf, PlatformHandle, []PlatformHandle, usize, *const fn (*anyopaque) void, *anyopaque, allocator: std.mem.Allocator) PatchIOErrors!void,
@@ -103,6 +104,10 @@ pub fn mergeFiles(self: *Self, out_file: PlatformHandle, in_files: []PlatformHan
 
 pub fn createFile(self: *Self, parent_dir: PlatformHandle, file_path: []const u8) PatchIOErrors!PlatformHandle {
     return self.impl.create_file(self.impl, parent_dir, file_path);
+}
+
+pub fn openFile(self: *Self, parent_dir: PlatformHandle, file_path: []const u8) PatchIOErrors!PlatformHandle {
+    return self.impl.open_file(self.impl, parent_dir, file_path);
 }
 
 test "Locking directory should return correct files" {

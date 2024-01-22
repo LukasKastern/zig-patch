@@ -121,6 +121,8 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         written_bytes: usize,
 
         start_sequence: usize,
+        num_sequences: usize,
+
         file_idx: usize,
 
         is_io_pending: bool,
@@ -129,9 +131,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         has_pending_write: *bool,
 
         write_start_time: i128,
-
-        first_block_taken_from_reference: usize,
-        last_block_taken_from_reference: usize,
 
         const InvalidRangeOperation = ~@as(usize, 0);
     };
@@ -301,15 +300,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 }
             }
 
-            //
-            if (self.write_buffer.?.first_block_taken_from_reference == WriteBuffer.InvalidRangeOperation) {
-                self.write_buffer.?.first_block_taken_from_reference = first_range_operation_block;
-            }
-
-            if (last_range_operation_block != WriteBuffer.InvalidRangeOperation) {
-                self.write_buffer.?.last_block_taken_from_reference = last_range_operation_block;
-            }
-
             self.has_active_task.store(0, .Release);
         }
     };
@@ -363,7 +353,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
     defer patch.close();
 
     var patch_file_offset: usize = blk: {
-        var worst_case_num_sections: usize = 0;
+        var num_sections: usize = 0;
 
         // Reserve the maximum amount of sections that our patch file could end up having.
         var file_idx: usize = 0;
@@ -371,22 +361,16 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             if (new_signature.getFile(file_idx).size != 0) {
                 const file_size = new_signature.getFile(file_idx).size;
 
-                var max_num_operations_for_file = @divTrunc(file_size, MaxOperationOutputSize);
-                if (max_num_operations_for_file % MaxOperationOutputSize != 0) {
-                    max_num_operations_for_file += 1;
-                }
+                num_sections += @divTrunc(file_size, DefaultMaxWorkUnitSize);
 
-                const file_size_with_overhead = file_size + max_num_operations_for_file * MaxOperationOverhead;
-
-                worst_case_num_sections += @divTrunc(file_size_with_overhead, WriteBufferSize);
-
-                if (file_size_with_overhead % WriteBufferSize != 0) {
-                    worst_case_num_sections += 1;
+                if (file_size % DefaultMaxWorkUnitSize != 0) {
+                    num_sections += 1;
                 }
             }
         }
 
-        try patch_header.sections.resize(worst_case_num_sections);
+        std.log.info("Num sections: {}", .{num_sections});
+        try patch_header.sections.resize(num_sections);
         defer patch_header.sections.resize(0) catch unreachable;
 
         var counting_writer = std.io.CountingWriter(@TypeOf(std.io.null_writer)){
@@ -553,6 +537,8 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                                 for (write_buffers.items) |write_buffer| {
                                     if (!write_buffer.is_io_pending) {
                                         maybe_write_buffer = write_buffer;
+                                        write_buffer.start_sequence = active_operation.next_sequence;
+                                        write_buffer.num_sequences = 0;
                                         break;
                                     }
                                 }
@@ -569,6 +555,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                                         .write_start_time = undefined,
                                         .file_idx = 0,
                                         .start_sequence = 0,
+                                        .num_sequences = 0,
                                     };
                                     try write_buffers.append(maybe_write_buffer.?);
                                 }
@@ -581,10 +568,14 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                             write_buffer.is_io_pending = true;
                             write_buffer.is_task_done = false;
                             write_buffer.written_bytes = 0;
-                            write_buffer.start_sequence = active_operation.next_sequence;
+
+                            if (write_buffer.start_sequence == 0) {
+                                write_buffer.start_sequence = active_operation.next_sequence;
+                            }
+
+                            write_buffer.num_sequences += 1;
+
                             write_buffer.file_idx = active_operation.target_file;
-                            write_buffer.first_block_taken_from_reference = WriteBuffer.InvalidRangeOperation;
-                            write_buffer.last_block_taken_from_reference = WriteBuffer.InvalidRangeOperation;
 
                             active_operation.current_read_buffer = next_buffer;
                             active_operation.next_read_buffer = null;
@@ -651,23 +642,27 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     buffer.has_pending_write.* = false;
 
                     var write_end_time = std.time.nanoTimestamp();
-                    std.log.debug(
-                        "Wrote {} bytes in {}ms ",
-                        .{
-                            buffer.written_bytes,
-                            @divTrunc(write_end_time - buffer.write_start_time, std.time.ns_per_ms),
-                        },
-                    );
+
+                    if (buffer.file_idx == 0 and buffer.start_sequence == 0) {
+                        std.log.info(
+                            "Wrote {} bytes in {}ms {any}",
+                            .{
+                                buffer.written_bytes,
+                                @divTrunc(write_end_time - buffer.write_start_time, std.time.ns_per_ms),
+                                buffer.buffer[0..buffer.written_bytes],
+                            },
+                        );
+                    }
 
                     buffer.written_bytes = ~@as(usize, 0);
                 }
             };
 
-            const cluster_alignment = 1024 * 4;
+            // const cluster_alignment = 1024 * 4;
 
-            if (write_buffer.written_bytes % cluster_alignment != 0) {
-                write_buffer.written_bytes += (cluster_alignment - write_buffer.written_bytes % cluster_alignment);
-            }
+            // if (write_buffer.written_bytes % cluster_alignment != 0) {
+            //     write_buffer.written_bytes += (cluster_alignment - write_buffer.written_bytes % cluster_alignment);
+            // }
 
             has_pending_write = true;
 
@@ -677,13 +672,17 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             var prev_offset = patch_file_offset;
             patch_file_offset += write_buffer.written_bytes;
 
-            patch_header.sections.appendAssumeCapacity(.{
-                .operations_start_pos_in_file = patch_file_offset,
-                .file_idx = write_buffer.file_idx,
-                .start_sequence = write_buffer.start_sequence,
-                .first_block_taken_from_reference = write_buffer.first_block_taken_from_reference,
-                .last_block_taken_from_reference = write_buffer.last_block_taken_from_reference,
-            });
+            for (write_buffer.start_sequence..write_buffer.start_sequence + write_buffer.num_sequences) |sequence| {
+                // std.log.info("Section: {}", .{patch_header.sections.items.len});
+
+                if (write_buffer.file_idx == 0 and write_buffer.start_sequence == 0) {
+                    std.log.info("Start: {}", .{prev_offset});
+                }
+                patch_header.sections.appendAssumeCapacity(.{
+                    .operations_start_pos_in_file = prev_offset + sequence * DefaultMaxWorkUnitSize, // This needs to be taken from the write buffer offset
+                    .file_idx = write_buffer.file_idx,
+                });
+            }
 
             try patch_io.writeFile(
                 patch_handle,
