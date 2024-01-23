@@ -56,11 +56,13 @@ pub const Implementation = struct {
     unlock_directory: *const fn (ImplSelf, locked_directory: LockedDirectory) void,
     destroy: *const fn (ImplSelf) void,
     create_file: *const fn (ImplSelf, PlatformHandle, []const u8) PatchIOErrors!PlatformHandle,
+    create_directory: *const fn (ImplSelf, PlatformHandle, []const u8) PatchIOErrors!PlatformHandle,
     open_file: *const fn (ImplSelf, PlatformHandle, []const u8) PatchIOErrors!PlatformHandle,
     read_file: *const fn (ImplSelf, PlatformHandle, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
-    write_file: *const fn (ImplSelf, PlatformHandle, usize, []u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
+    write_file: *const fn (ImplSelf, PlatformHandle, usize, []const u8, *const fn (*anyopaque) void, *anyopaque) PatchIOErrors!void,
     merge_files: *const fn (ImplSelf, PlatformHandle, []PlatformHandle, usize, *const fn (*anyopaque) void, *anyopaque, allocator: std.mem.Allocator) PatchIOErrors!void,
     tick: *const fn (ImplSelf) void,
+    close_handle: *const fn (ImplSelf, PlatformHandle) void,
 };
 
 const Self = @This();
@@ -94,7 +96,7 @@ pub fn tick(self: *Self) void {
     return self.impl.tick(self.impl);
 }
 
-pub fn writeFile(self: *Self, handle: PlatformHandle, offset: usize, buffer: []u8, callback: *const fn (*anyopaque) void, callback_context: *anyopaque) PatchIOErrors!void {
+pub fn writeFile(self: *Self, handle: PlatformHandle, offset: usize, buffer: []const u8, callback: *const fn (*anyopaque) void, callback_context: *anyopaque) PatchIOErrors!void {
     return self.impl.write_file(self.impl, handle, offset, buffer, callback, callback_context);
 }
 
@@ -104,6 +106,14 @@ pub fn mergeFiles(self: *Self, out_file: PlatformHandle, in_files: []PlatformHan
 
 pub fn createFile(self: *Self, parent_dir: PlatformHandle, file_path: []const u8) PatchIOErrors!PlatformHandle {
     return self.impl.create_file(self.impl, parent_dir, file_path);
+}
+
+pub fn createDirectory(self: *Self, parent_dir: PlatformHandle, directory_name: []const u8) PatchIOErrors!PlatformHandle {
+    return self.impl.create_directory(self.impl, parent_dir, directory_name);
+}
+
+pub fn closeHandle(self: *Self, handle: PlatformHandle) void {
+    self.impl.close_handle(self.impl, handle);
 }
 
 pub fn openFile(self: *Self, parent_dir: PlatformHandle, file_path: []const u8) PatchIOErrors!PlatformHandle {

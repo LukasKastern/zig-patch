@@ -15,7 +15,11 @@ pub const BlockRangeOperation = struct {
     block_span: usize,
 };
 
-pub const PatchOperation = union(enum) { Invalid: void, BlockRange: BlockRangeOperation, Data: []u8 };
+pub const PatchOperation = union(enum) {
+    Invalid: void,
+    BlockRange: BlockRangeOperation,
+    Data: []const u8,
+};
 
 pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, max_operation_len: usize, allocator: std.mem.Allocator) !std.ArrayList(PatchOperation) {
     const max_operations = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(buffer.len)) / @as(f64, @floatFromInt(BlockSize)))));
@@ -580,24 +584,53 @@ pub const SerializedOperationIterator = struct {
     num_operations: usize,
 
     stream: std.io.FixedBufferStream([]const u8),
+    reader: std.io.FixedBufferStream([]const u8).Reader,
 
-    pub fn init(serialized_operations: []const u8) !Self {
+    pub fn init(self: *SerializedOperationIterator, serialized_operations: []const u8) !void {
         var stream = std.io.fixedBufferStream(serialized_operations);
-        var num_operations = try stream.reader().readInt(usize, Endian);
 
-        return .{
+        self.* = .{
             .stream = stream,
-            .num_operations = num_operations,
+            .num_operations = undefined,
             .next_operation = 0,
             .operations = serialized_operations,
+            .reader = undefined,
         };
+
+        self.reader = self.stream.reader();
+        self.num_operations = try self.reader.readInt(usize, Endian);
     }
 
-    pub fn nextOperation(self: *Self) ?PatchOperation {
+    pub fn nextOperation(self: *Self) !?PatchOperation {
         if (self.next_operation >= self.num_operations) {
             return null;
         }
-        return null;
+
+        self.next_operation += 1;
+
+        var operation_type_raw = try self.reader.readInt(usize, Endian);
+        var operation: PatchOperation = undefined;
+
+        if (operation_type_raw == 1) {
+            var data_len = try self.reader.readInt(usize, Endian);
+
+            operation = PatchOperation{
+                .Data = self.stream.buffer[self.stream.pos .. self.stream.pos + data_len],
+            };
+            self.stream.pos += data_len;
+        } else if (operation_type_raw == 2) {
+            var file_idx = try self.reader.readInt(usize, Endian);
+            var block_idx = try self.reader.readInt(usize, Endian);
+            var block_span = try self.reader.readInt(usize, Endian);
+
+            operation = PatchOperation{
+                .BlockRange = .{ .file_index = file_idx, .block_index = block_idx, .block_span = block_span },
+            };
+        } else {
+            return error.FoundInvalidOperation;
+        }
+
+        return operation;
     }
 };
 

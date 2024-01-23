@@ -467,26 +467,29 @@ pub const SignatureFile = struct {
         signature_file.data = .{
             .InMemorySignatureFile = .{
                 .directories = try std.ArrayList(Directory).initCapacity(signature_file.allocator, num_directories),
-                .files = undefined,
+                .files = std.ArrayList(File).init(signature_file.allocator),
             },
         };
 
         var signature_data = &signature_file.data.?.InMemorySignatureFile;
-        try signature_data.directories.resize(num_directories);
-
         var total_allocated_len: usize = 0;
-        for (signature_data.directories.items) |*directory| {
+
+        for (0..num_directories) |_| {
             const path_length = try reader.readInt(usize, Endian);
             total_allocated_len += path_length;
             var path_buffer = try signature_file.allocator.alloc(u8, path_length);
             errdefer signature_file.allocator.free(path_buffer);
 
             try reader.readNoEof(path_buffer[0..path_length]);
-            directory.path = path_buffer;
+            signature_file.data.?.InMemorySignatureFile.directories.appendAssumeCapacity(
+                .{
+                    .path = path_buffer,
+                },
+            );
         }
 
         const num_files = try reader.readInt(usize, Endian);
-        signature_data.files = try std.ArrayList(File).initCapacity(signature_file.allocator, num_files);
+
         try signature_data.files.resize(num_files);
 
         for (signature_data.files.items) |*file| {

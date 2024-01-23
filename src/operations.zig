@@ -47,13 +47,18 @@ pub const OperationConfig = struct {
     progress_callback: ?ProgressCallback = null,
 };
 
-pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, config: OperationConfig, stats: ?*OperationStats) !void {
+pub fn applyPatch(patch_file_path: []const u8, reference_folder: ?[]const u8, target_folder: []const u8, config: OperationConfig, stats: ?*OperationStats) !void {
     var allocator = config.allocator;
     var thread_pool = config.thread_pool;
     var cwd: std.fs.Dir = config.working_dir;
 
     var timer = try time.Timer.start();
     var start_sample = timer.read();
+
+    if (cwd.access(target_folder, .{}) != error.FileNotFound) {
+        std.log.err("Failed to validate that the target folder is empty. Ensure it doesn't exist.", .{});
+        return error.TargetFolderFailure;
+    }
 
     var patch_file = cwd.openFile(patch_file_path, .{}) catch |e| {
         switch (e) {
@@ -88,7 +93,7 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
         apply_patch_stats = &stats_unwrapped.apply_patch_stats.?;
     }
 
-    var validate_source_folder = patch.old.blocks.items.len > 0;
+    var validate_reference_folder = patch.old.blocks.items.len > 0;
 
     var staging_folder_path_buffer: [1024]u8 = undefined;
 
@@ -108,69 +113,65 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
         }
     }
 
-    var source_folder_with_err = cwd.openDir(folder_to_patch, .{});
-
-    if (source_folder_with_err) |folder_without_err| {
-        source_folder = folder_without_err;
-    } else |err| {
-        switch (err) {
-            error.FileNotFound => {
-                // Not finding the directory will fail further down in case we need the source folder.
-                // If the patch doesn't require a reference this error is okay.
-            },
-            else => {
-                std.log.err("Failed to open source folder, error => {}", .{err});
-                return error.FailedToOpenSourceFolder;
-            },
-        }
+    if (reference_folder == null and validate_reference_folder) {
+        std.log.err("Patch requires a reference folder.", .{});
+        return error.SignatureMismatch;
     }
 
-    if (validate_source_folder) {
-        if (source_folder == null or !@call(.never_inline, SignatureFile.validateFolderMatchesSignature, .{ patch.old, source_folder.? })) {
-            std.log.err("Source folder doesn't match reference that the patch was generated from", .{});
+    if (reference_folder) |ref_folder_unwrapped| {
+        source_folder = cwd.openDir(ref_folder_unwrapped, .{}) catch |e| {
+            switch (e) {
+                else => {
+                    std.log.err("Failed to open reference folder. Error: {s}", .{@errorName(e)});
+                    return error.ReferenceFolderNotFound;
+                },
+            }
+        };
+    }
+
+    if (validate_reference_folder) {
+        if (!@call(.never_inline, SignatureFile.validateFolderMatchesSignature, .{ patch.old, source_folder.? })) {
+            std.log.err("Reference folder doesn't match signature that the patch was generated from", .{});
             return error.SignatureMismatch;
         }
-    }
-
-    if (source_folder) |source_folde_unwrapped| {
-        // Copy the folder to patch into our temporary staging folder.
-        try @call(.never_inline, utils.copyFolder, .{ tmp_folder.?, source_folde_unwrapped });
     }
 
     var patch_io = try PatchIO.init(cwd, allocator);
     defer patch_io.deinit();
 
-    try @call(.never_inline, ApplyPatch.createFileStructure, .{ tmp_folder.?, patch });
+    var patch_files = try @call(.never_inline, ApplyPatch.createFileStructure, .{ &patch_io, tmp_folder.?, patch, allocator });
+    {
+        defer {
+            for (patch_files.items) |file| {
+                patch_io.closeHandle(file);
+            }
 
-    try @call(
-        .never_inline,
-        ApplyPatch.applyPatch,
-        .{
-            cwd,
-            source_folder,
-            tmp_folder.?,
-            patch_file_path,
-            patch,
-            thread_pool,
-            allocator,
-            config.progress_callback,
-            &patch_io,
-            patch_file,
-            apply_patch_stats,
-        },
-    );
+            patch_files.deinit();
+        }
 
-    if (source_folder) |*source_folder_unwrapped| {
-        // If we already have a folder at the source path we back it up.
-
-        source_folder_unwrapped.close();
-        source_folder = null;
-        try cwd.deleteTree(folder_to_patch);
+        try @call(
+            .never_inline,
+            ApplyPatch.applyPatch,
+            .{
+                cwd,
+                source_folder,
+                tmp_folder.?,
+                patch_file_path,
+                patch,
+                thread_pool,
+                allocator,
+                config.progress_callback,
+                &patch_io,
+                patch_file,
+                apply_patch_stats,
+                patch_files,
+            },
+        );
     }
 
     tmp_folder.?.close();
     tmp_folder = null;
-    try cwd.rename(tmp_folder_path, folder_to_patch);
+    try cwd.rename(tmp_folder_path, target_folder);
 
     var end_sample = timer.read();
     std.log.info("Applied Patch in {d:2}ms", .{(@as(f64, @floatFromInt(end_sample)) - @as(f64, @floatFromInt(start_sample))) / 1000000});

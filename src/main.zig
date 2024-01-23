@@ -187,7 +187,8 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
     const params = comptime clap.parseParamsComptime(
         \\-h, --help                     Display this help message.
         \\-p, --patch <str>              Path to the patch that should be applied.
-        \\-t, --target_folder <str>      Path to the folder to patch.
+        \\-r, --reference_folder <str>   Path to the folder to patch.
+        \\-t, --target_folder <str>      Path to the patch output.
     );
 
     var diag: clap.Diagnostic = undefined;
@@ -241,7 +242,7 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
     var print_helper = MakeSignaturePrintHelper{};
 
     // zig fmt: off
-    try operations.applyPatch(parsed_args.args.patch.?, parsed_args.args.target_folder.?, .{
+    try operations.applyPatch(parsed_args.args.patch.?, parsed_args.args.reference_folder, parsed_args.args.target_folder.?, .{
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,
@@ -356,7 +357,7 @@ pub fn main() !void {
 
     const command = std.meta.stringToEnum(CommandLineCommand, command_name) orelse show_main_help();
 
-    var thread_pool = ThreadPool.init(.{ .max_threads = 1 });
+    var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
     thread_pool.spawnThreads();
 
     switch (command) {

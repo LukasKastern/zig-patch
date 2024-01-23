@@ -121,7 +121,8 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         written_bytes: usize,
 
         start_sequence: usize,
-        num_sequences: usize,
+
+        sequence_offsets: std.ArrayList(usize),
 
         file_idx: usize,
 
@@ -279,6 +280,8 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     write_buffer_stream.writer().writeIntBig(usize, deflated_data.len) catch unreachable;
                 }
 
+                self.write_buffer.?.sequence_offsets.appendAssumeCapacity(prev_offset);
+
                 self.write_buffer.?.written_bytes = prev_offset + deflated_data.len + @sizeOf(usize);
             }
 
@@ -329,6 +332,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
     var write_buffers = try std.ArrayList(*WriteBuffer).initCapacity(allocator, max_num_write_buffers);
     defer {
         for (write_buffers.items) |buffer| {
+            buffer.sequence_offsets.deinit();
             allocator.destroy(buffer);
         }
 
@@ -538,7 +542,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                                     if (!write_buffer.is_io_pending) {
                                         maybe_write_buffer = write_buffer;
                                         write_buffer.start_sequence = active_operation.next_sequence;
-                                        write_buffer.num_sequences = 0;
+                                        write_buffer.sequence_offsets.clearRetainingCapacity();
                                         break;
                                     }
                                 }
@@ -555,7 +559,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                                         .write_start_time = undefined,
                                         .file_idx = 0,
                                         .start_sequence = 0,
-                                        .num_sequences = 0,
+                                        .sequence_offsets = try std.ArrayList(usize).initCapacity(allocator, 32),
                                     };
                                     try write_buffers.append(maybe_write_buffer.?);
                                 }
@@ -572,8 +576,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                             if (write_buffer.start_sequence == 0) {
                                 write_buffer.start_sequence = active_operation.next_sequence;
                             }
-
-                            write_buffer.num_sequences += 1;
 
                             write_buffer.file_idx = active_operation.target_file;
 
@@ -672,16 +674,14 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             var prev_offset = patch_file_offset;
             patch_file_offset += write_buffer.written_bytes;
 
-            for (write_buffer.start_sequence..write_buffer.start_sequence + write_buffer.num_sequences) |sequence| {
+            for (write_buffer.sequence_offsets.items) |sequence_offset| {
                 // std.log.info("Section: {}", .{patch_header.sections.items.len});
-
-                if (write_buffer.file_idx == 0 and write_buffer.start_sequence == 0) {
-                    std.log.info("Start: {}", .{prev_offset});
-                }
-                patch_header.sections.appendAssumeCapacity(.{
-                    .operations_start_pos_in_file = prev_offset + sequence * DefaultMaxWorkUnitSize, // This needs to be taken from the write buffer offset
-                    .file_idx = write_buffer.file_idx,
-                });
+                patch_header.sections.appendAssumeCapacity(
+                    .{
+                        .operations_start_pos_in_file = prev_offset + sequence_offset, // This needs to be taken from the write buffer offset
+                        .file_idx = write_buffer.file_idx,
+                    },
+                );
             }
 
             try patch_io.writeFile(
