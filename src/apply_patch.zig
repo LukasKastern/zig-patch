@@ -226,6 +226,9 @@ const ApplyPatchOperation = struct {
     active_patch_operation: ?struct {
         operation: BlockPatching.PatchOperation,
         is_write_pending: bool,
+
+        patch_io: *PatchIO,
+        block_range_buffer: []u8,
     },
 
     per_thread_data: struct {
@@ -282,8 +285,33 @@ pub fn applyPatch(
     _ = target_dir;
     _ = progress_callback;
     _ = patch_file_path;
-    _ = source_dir;
     _ = working_dir;
+
+    var source_files = blk: {
+        var files = try std.ArrayList(PatchIO.PlatformHandle).initCapacity(allocator, patch.old.numFiles());
+        errdefer {
+            for (files.items) |file| {
+                patch_io.closeHandle(file);
+            }
+            files.deinit();
+        }
+
+        for (0..patch.old.numFiles()) |file_idx| {
+            var file = patch.old.getFile(file_idx);
+            files.appendAssumeCapacity(try patch_io.openFile(source_dir.?.fd, file.name));
+        }
+
+        break :blk files;
+    };
+    defer {
+        for (source_files.items) |file| {
+            patch_io.closeHandle(file);
+        }
+        source_files.deinit();
+    }
+
+    var reference_anchored_blocks_map = try AnchoredBlocksMap.init(patch.old, allocator);
+    defer reference_anchored_blocks_map.deinit();
 
     var patch_file_handle = patch_file.handle;
 
@@ -461,6 +489,8 @@ pub fn applyPatch(
                                     operation.active_patch_operation = .{
                                         .operation = patch_op,
                                         .is_write_pending = true,
+                                        .patch_io = patch_io,
+                                        .block_range_buffer = undefined,
                                     };
 
                                     try patch_io.writeFile(
@@ -476,6 +506,47 @@ pub fn applyPatch(
                                     if (stats) |stats_unwrapped| {
                                         stats_unwrapped.total_patch_size_bytes += data_op.len;
                                     }
+                                },
+                                .BlockRange => |block_range| {
+                                    //TODO: Handle block span.
+                                    var block = reference_anchored_blocks_map.getBlock(block_range.file_index, block_range.block_index);
+                                    var src_file = source_files.items[block.file_index];
+
+                                    const BlockRangeCallbacks = struct {
+                                        fn writeCallback(ctx: *anyopaque) void {
+                                            var op: *ApplyPatchOperation = @ptrCast(@alignCast(ctx));
+                                            op.active_patch_operation = null;
+                                        }
+
+                                        fn readReferenceCallback(ctx: *anyopaque) void {
+                                            var op: *ApplyPatchOperation = @ptrCast(@alignCast(ctx));
+
+                                            op.active_patch_operation.?.patch_io.writeFile(
+                                                op.patched_file_handle,
+                                                op.patch_file_offset,
+                                                op.active_patch_operation.?.block_range_buffer,
+                                                writeCallback,
+                                                op,
+                                            ) catch unreachable; //FIX this
+
+                                            op.patch_file_offset += op.active_patch_operation.?.block_range_buffer.len;
+                                        }
+                                    };
+
+                                    operation.active_patch_operation = .{
+                                        .operation = patch_op,
+                                        .is_write_pending = true,
+                                        .patch_io = patch_io,
+                                        .block_range_buffer = operation.read_buffer[0 .. BlockSize - block.short_size],
+                                    };
+
+                                    try patch_io.readFile(
+                                        src_file,
+                                        block.block_index * BlockSize,
+                                        operation.active_patch_operation.?.block_range_buffer,
+                                        BlockRangeCallbacks.readReferenceCallback,
+                                        operation,
+                                    );
                                 },
                                 else => unreachable, //TODO:
                             }

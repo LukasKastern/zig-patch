@@ -660,12 +660,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 }
             };
 
-            // const cluster_alignment = 1024 * 4;
-
-            // if (write_buffer.written_bytes % cluster_alignment != 0) {
-            //     write_buffer.written_bytes += (cluster_alignment - write_buffer.written_bytes % cluster_alignment);
-            // }
-
             has_pending_write = true;
 
             write_buffer.write_start_time = std.time.nanoTimestamp();
