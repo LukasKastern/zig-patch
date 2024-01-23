@@ -323,13 +323,42 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
 
         staging_dir_path = try staging_dir.realpath("", &staging_patch_path_buffer);
 
-        var src_patch_path_buffer: [512]u8 = undefined;
-        var src_patch_path = try std.fmt.bufPrint(&src_patch_path_buffer, "{s}/Patch.pwd", .{staging_dir_path});
+        {
+            var src_patch_path_buffer: [512]u8 = undefined;
+            var src_patch_path = try std.fmt.bufPrint(&src_patch_path_buffer, "{s}/Patch.pwd", .{staging_dir_path});
 
-        var dst_patch_path_buffer: [512]u8 = undefined;
-        var dst_patch_path = try std.fmt.bufPrint(&dst_patch_path_buffer, "{s}/../Patch.pwd", .{staging_dir_path});
+            var dst_patch_path_buffer: [512]u8 = undefined;
+            var dst_patch_path = try std.fmt.bufPrint(&dst_patch_path_buffer, "{s}/../Patch.pwd", .{staging_dir_path});
 
-        try std.os.rename(src_patch_path, dst_patch_path);
+            try std.os.rename(src_patch_path, dst_patch_path);
+        }
+
+        // Write signature file to disk.
+        {
+            var signature_file = try staging_dir.createFile("Patch.signature", .{});
+            defer signature_file.close();
+
+            const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
+            var buffered_file_writer: BufferedFileWriter = .{
+                .unbuffered_writer = signature_file.writer(),
+            };
+
+            var writer = buffered_file_writer.writer();
+
+            try new_signature_file.saveSignature(writer);
+            try buffered_file_writer.flush();
+        }
+
+        // Move signature file into working dir.
+        {
+            var src_signature_path_buffer: [512]u8 = undefined;
+            var src_signature_path = try std.fmt.bufPrint(&src_signature_path_buffer, "{s}/Patch.signature", .{staging_dir_path});
+
+            var dst_signature_path_buffer: [512]u8 = undefined;
+            var dst_signature_path = try std.fmt.bufPrint(&dst_signature_path_buffer, "{s}/../Patch.signature", .{staging_dir_path});
+
+            try std.os.rename(src_signature_path, dst_signature_path);
+        }
     }
 
     std.fs.deleteTreeAbsolute(staging_dir_path) catch |e| {
