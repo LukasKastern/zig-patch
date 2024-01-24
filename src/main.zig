@@ -73,6 +73,7 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         \\-f, --source_folder <str>      Path to the folder to create the diff from.
         \\-s, --signature_file <str>     Signature file to which the Patch will be created.
         \\-c, --compression <str>        Compression that will be used. Valid options are: None, Brotli, Zlib and Zstd (default)
+        \\    --threads <u32>            Number of worker threads to use. Defaults to core_count - 1.                 
         \\
     );
 
@@ -110,6 +111,12 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
             return;
         }
     }
+
+    if (parsed_args.args.threads) |num_threads| {
+        thread_pool.max_threads = num_threads;
+    }
+
+    thread_pool.spawnThreads();
 
     var folder = parsed_args.args.source_folder;
     var previous_signature = parsed_args.args.signature_file;
@@ -222,6 +229,7 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
         \\-p, --patch <str>              Path to the patch that should be applied.
         \\-r, --reference_folder <str>   Path to the folder to patch.
         \\-t, --target_folder <str>      Path to the patch output.
+        \\    --threads <u32>            Number of worker threads to use. Defaults to core_count - 1.                 
     );
 
     var diag: clap.Diagnostic = undefined;
@@ -252,6 +260,12 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
         std.log.err("No --target_folder <str> passed to apply. Please specify it to tell zig-patch where to place the build.", .{});
         return;
     }
+
+    if (parsed_args.args.threads) |num_threads| {
+        thread_pool.max_threads = num_threads;
+    }
+
+    thread_pool.spawnThreads();
 
     {
         const stdout = std.io.getStdErr().writer();
@@ -302,6 +316,7 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
         \\-h, --help                     Display this help message.
         \\-t, --source_folder <str>      Path of the folder to create the signature file from.
         \\-o, --output_file <str>        Output path of the generated file.
+        \\    --threads <u32>            Number of worker threads to use. Defaults to core_count - 1.                 
     );
 
     var diag: clap.Diagnostic = undefined;
@@ -331,6 +346,12 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
         std.log.err("No --output_file <str> passed to make_signature. Please specify it to tell zig-patch where to place the resulting signature file.", .{});
         return;
     }
+
+    if (parsed_args.args.threads) |num_threads| {
+        thread_pool.max_threads = num_threads;
+    }
+
+    thread_pool.spawnThreads();
 
     {
         const stdout = std.io.getStdErr().writer();
@@ -380,7 +401,7 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
 
 pub const std_options = struct {
     // Set the log level to error
-    pub const log_level = .info;
+    pub const log_level = .warn;
 };
 
 pub fn main() !void {
@@ -406,7 +427,6 @@ pub fn main() !void {
     var cores = std.Thread.getCpuCount() catch 4;
 
     var thread_pool = ThreadPool.init(.{ .max_threads = @intCast(if (cores > 1) cores - 1 else cores) });
-    thread_pool.spawnThreads();
 
     switch (command) {
         .create => {
@@ -423,12 +443,15 @@ pub fn main() !void {
         },
     }
 
-    var shutdown_task_data = ShutdownTaskData{
-        .task = ThreadPool.Task{ .callback = shutdownThreadpool },
-        .pool = &thread_pool,
-    };
+    if (thread_pool.num_threads != 0) {
+        var shutdown_task_data = ShutdownTaskData{
+            .task = ThreadPool.Task{ .callback = shutdownThreadpool },
+            .pool = &thread_pool,
+        };
 
-    thread_pool.schedule(ThreadPool.Batch.from(&shutdown_task_data.task));
+        thread_pool.schedule(ThreadPool.Batch.from(&shutdown_task_data.task));
+    }
+
     defer ThreadPool.deinit(&thread_pool);
 }
 
