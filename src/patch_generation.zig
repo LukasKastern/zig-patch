@@ -113,7 +113,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         tasks_completed: usize,
     };
 
-    //TODO: This should be MaxWorkUnitSize / MaxDataOpLen or something like
+    //TODO: This should be MaxWorkUnitSize / MaxDataOpLen or something like that
     const MaxOperationOverhead = 1024;
     const MaxOperationOutputSize = DefaultMaxWorkUnitSize + MaxOperationOverhead;
     const WriteBufferSize = MaxOperationOutputSize * 10;

@@ -1,8 +1,3 @@
-// IO Use Cases by zig-patch:
-// 1. Scan a directory to create a signature from it
-// 2. Read files from that scanned directory
-// 3. When applying a patch we lock and copy a directory
-
 const std = @import("std");
 const WindowsIO = @import("windows_io.zig");
 
