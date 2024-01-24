@@ -460,9 +460,9 @@ test {
     std.testing.refAllDecls(@import("rolling_hash.zig"));
     std.testing.refAllDecls(@import("block_patching.zig"));
     std.testing.refAllDecls(@import("signature_file.zig"));
-    // std.testing.refAllDecls(@import("patch_generation.zig"));
-    // std.testing.refAllDecls(@import("patch_header.zig"));
+    std.testing.refAllDecls(@import("patch_generation.zig"));
+    std.testing.refAllDecls(@import("patch_header.zig"));
     std.testing.refAllDecls(@import("compression/compression.zig"));
-    std.testing.refAllDecls(@import("e2e_tests.zig"));
     std.testing.refAllDecls(@import("io/patch_io.zig"));
+    std.testing.refAllDecls(@import("e2e_tests.zig"));
 }

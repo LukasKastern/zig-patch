@@ -257,7 +257,6 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
     }
 
     if (previous_signature == null) {
-        std.log.warn("{s}", .{"No previous signature specified. A full patch will be generated. Specify a previous signature using --previous_signature <path>"});
         prev_signature_file = try SignatureFile.init(allocator);
         try prev_signature_file.?.initializeToEmptyInMemoryFile();
     } else {

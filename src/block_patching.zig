@@ -21,85 +21,6 @@ pub const PatchOperation = union(enum) {
     Data: []const u8,
 };
 
-pub fn generateOperationsForBuffer(buffer: []u8, block_map: AnchoredBlocksMap, max_operation_len: usize, allocator: std.mem.Allocator) !std.ArrayList(PatchOperation) {
-    const max_operations = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(buffer.len)) / @as(f64, @floatFromInt(BlockSize)))));
-    var patch_operations = try std.ArrayList(PatchOperation).initCapacity(allocator, max_operations);
-
-    var tail: usize = 0;
-    var head: usize = 0;
-    var owed_data_tail: usize = 0;
-
-    var rolling_hash: RollingHash = .{};
-
-    var jump_to_next_block = true;
-
-    while (tail <= buffer.len) {
-        if (jump_to_next_block) {
-            head = @min(head + BlockSize, buffer.len);
-
-            if (tail == head) {
-                break;
-            }
-            rolling_hash.recompute(buffer[tail..head]);
-            jump_to_next_block = false;
-        } else {
-            rolling_hash.next(buffer, tail - 1, head - 1);
-        }
-
-        std.debug.assert(head - tail <= BlockSize);
-
-        var hash = rolling_hash.hash;
-
-        var known_block: ?AnchoredBlock = null;
-
-        if (block_map.hasAnchoredBlocksForWeakHash(hash)) {
-            @setRuntimeSafety(false);
-            // Hash found. Calculate MD5 and see if we match with a known block.
-
-            var block_hash: BlockHash = .{ .weak_hash = hash, .strong_hash = undefined };
-
-            std.crypto.hash.Md5.hash(buffer[tail..head], &block_hash.strong_hash, .{});
-
-            var block_size = head - tail;
-            var short_size = BlockSize - block_size;
-
-            //TODO: Add the preferred file idx here (lukas)
-            known_block = block_map.getAnchoredBlock(block_hash, 0, short_size);
-        }
-
-        if (known_block) |block| {
-            if (tail != owed_data_tail) {
-                try patch_operations.append(.{ .Data = buffer[owed_data_tail..tail] });
-                // std.log.err("Appending OwedTail {}:{}", .{ owed_data_tail, tail });
-            }
-
-            //TODO: Check if last operation is the same. If so merge span. (lukas)
-            try patch_operations.append(.{ .BlockRange = .{ .file_index = block.file_index, .block_index = block.block_index, .block_span = 1 } });
-
-            owed_data_tail = head;
-            tail = head;
-            jump_to_next_block = true;
-        } else {
-            tail += 1;
-            head = @min(head + 1, buffer.len);
-            const reached_end_of_buffer = tail == head;
-            const can_omit_data_op = owed_data_tail != tail;
-            const needs_to_omit_data_op = reached_end_of_buffer or (tail - owed_data_tail >= max_operation_len);
-
-            if (can_omit_data_op and needs_to_omit_data_op) {
-                var slice = buffer[owed_data_tail..tail];
-
-                try patch_operations.append(.{ .Data = slice });
-
-                // std.log.err("Appending Block {}:{}", .{ owed_data_tail, tail });
-                owed_data_tail = tail;
-            }
-        }
-    }
-
-    return patch_operations;
-}
-
 pub const GenerateOperationsState = struct {
 
     // User supplied data for the input of the incremental generation.
@@ -219,7 +140,7 @@ pub const GenerateOperationsState = struct {
     }
 };
 
-pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, state: *GenerateOperationsState, allocator: std.mem.Allocator, max_operation_len: usize) !std.ArrayList(PatchOperation) {
+pub fn generateOperationsForBuffer(block_map: AnchoredBlocksMap, state: *GenerateOperationsState, allocator: std.mem.Allocator, max_operation_len: usize) !std.ArrayList(PatchOperation) {
     const max_operations = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(state.in_buffer.len)) / @as(f64, @floatFromInt(BlockSize))))) + 1;
     var patch_operations = try std.ArrayList(PatchOperation).initCapacity(allocator, max_operations);
 
@@ -382,128 +303,6 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
     return patch_operations;
 }
 
-test "Test Block buffer" {}
-
-// test "Generating operations incrementally should rebuild orignal buffer" {
-//     const max_operation_len: usize = 512;
-
-//     const buffer_size = @trunc(@intToFloat(f64, max_operation_len) * 4);
-//     var original_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
-//     defer std.testing.allocator.free(original_buffer);
-
-//     var rebuilt_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
-//     defer std.testing.allocator.free(rebuilt_buffer);
-
-//     var rand = std.rand.DefaultPrng.init(365654);
-
-//     for (original_buffer, 0..) |*item, idx| {
-//         item.* = rand.random().int(u8);
-//         rebuilt_buffer[idx] = 0;
-//     }
-
-//     const empty_signature_file = try SignatureFile.init(std.testing.allocator);
-//     defer empty_signature_file.deinit();
-
-//     const anchored_block_map = try AnchoredBlocksMap.init(empty_signature_file.*, std.testing.allocator);
-//     defer anchored_block_map.deinit();
-
-//     var incremental_state: IncrementalState = undefined;
-//     incremental_state.is_valid = false;
-
-//     var operations = try generateOperationsForBufferIncremental(&incremental_state, &.{original_buffer}, 0, 0, anchored_block_map.*, max_operation_len, std.testing.allocator);
-//     defer operations.deinit();
-
-//     var offset: usize = 0;
-
-//     try std.testing.expect(operations.items.len > 0);
-//     for (operations.items) |operation| {
-//         try std.testing.expect(operation == .Data);
-//         std.mem.copy(u8, rebuilt_buffer[offset..], operation.Data);
-//         offset += operation.Data.len;
-//     }
-
-//     try std.testing.expectEqualSlices(u8, original_buffer, rebuilt_buffer);
-// }
-test "Operations for buffer without Reference should rebuild the original buffer" {
-    const max_operation_len: usize = 512;
-
-    const buffer_size = @trunc(@as(f64, @floatFromInt(max_operation_len)) * 1);
-    var original_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
-    defer std.testing.allocator.free(original_buffer);
-
-    var rebuilt_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
-    defer std.testing.allocator.free(rebuilt_buffer);
-
-    var rand = std.rand.DefaultPrng.init(365654);
-
-    for (original_buffer, 0..) |*item, idx| {
-        item.* = rand.random().int(u8);
-        rebuilt_buffer[idx] = 0;
-    }
-
-    const empty_signature_file = try SignatureFile.init(std.testing.allocator);
-    defer empty_signature_file.deinit();
-
-    try empty_signature_file.initializeToEmptyInMemoryFile();
-
-    const anchored_block_map = try AnchoredBlocksMap.init(empty_signature_file, std.testing.allocator);
-    defer anchored_block_map.deinit();
-
-    var operations = try generateOperationsForBuffer(original_buffer, anchored_block_map.*, max_operation_len, std.testing.allocator);
-    defer operations.deinit();
-
-    var offset: usize = 0;
-
-    try std.testing.expect(operations.items.len > 0);
-    for (operations.items) |operation| {
-        try std.testing.expect(operation == .Data);
-        std.mem.copy(u8, rebuilt_buffer[offset..], operation.Data);
-        offset += operation.Data.len;
-    }
-
-    try std.testing.expectEqualSlices(u8, original_buffer, rebuilt_buffer);
-}
-
-test "Operations for buffer without Reference should rebuild the original buffer - with fractional buffer size of max operation length" {
-    const max_operation_len: usize = 512;
-
-    const buffer_size = @trunc(@as(f64, @floatFromInt(max_operation_len)) * 3.564);
-    var original_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
-    defer std.testing.allocator.free(original_buffer);
-
-    var rebuilt_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
-    defer std.testing.allocator.free(rebuilt_buffer);
-
-    var rand = std.rand.DefaultPrng.init(1238721);
-
-    for (original_buffer, 0..) |*item, idx| {
-        item.* = rand.random().int(u8);
-        rebuilt_buffer[idx] = 0;
-    }
-
-    const empty_signature_file = try SignatureFile.init(std.testing.allocator);
-    defer empty_signature_file.deinit();
-
-    try empty_signature_file.initializeToEmptyInMemoryFile();
-
-    const anchored_block_map = try AnchoredBlocksMap.init(empty_signature_file, std.testing.allocator);
-    defer anchored_block_map.deinit();
-
-    var operations = try generateOperationsForBuffer(original_buffer, anchored_block_map.*, max_operation_len, std.testing.allocator);
-    defer operations.deinit();
-
-    var offset: usize = 0;
-
-    try std.testing.expect(operations.items.len > 0);
-    for (operations.items) |operation| {
-        try std.testing.expect(operation == .Data);
-        std.mem.copy(u8, rebuilt_buffer[offset..], operation.Data);
-        offset += operation.Data.len;
-    }
-
-    try std.testing.expectEqualSlices(u8, original_buffer, rebuilt_buffer);
-}
-
 const Endian = std.builtin.Endian.Big;
 
 // This is the minimum size an operation can take up in serialized memory.
@@ -631,7 +430,7 @@ pub const SerializedOperationIterator = struct {
     }
 };
 
-test "operations should be same after deserialization" {
+test "Operations should be same after deserialization" {
     var operations = std.ArrayList(PatchOperation).init(std.testing.allocator);
     defer operations.deinit();
 
@@ -689,4 +488,100 @@ test "operations should be same after deserialization" {
             try std.testing.expect(false);
         }
     }
+}
+
+test "Generating operations should rebuild orignal buffer" {
+    const max_operation_len: usize = 512;
+
+    const buffer_size = @trunc(@as(f64, @floatFromInt(max_operation_len)) * 4);
+    var original_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
+    defer std.testing.allocator.free(original_buffer);
+
+    var rebuilt_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
+    defer std.testing.allocator.free(rebuilt_buffer);
+
+    var rand = std.rand.DefaultPrng.init(365654);
+
+    for (original_buffer, 0..) |*item, idx| {
+        item.* = rand.random().int(u8);
+        rebuilt_buffer[idx] = 0;
+    }
+
+    const empty_signature_file = try SignatureFile.init(std.testing.allocator);
+    defer empty_signature_file.deinit();
+
+    const anchored_block_map = try AnchoredBlocksMap.init(empty_signature_file, std.testing.allocator);
+    defer anchored_block_map.deinit();
+
+    var incremental_state: GenerateOperationsState = undefined;
+    incremental_state.init(original_buffer.len);
+    incremental_state.in_buffer = original_buffer;
+
+    var operations = try generateOperationsForBuffer(
+        anchored_block_map.*,
+        &incremental_state,
+        std.testing.allocator,
+        max_operation_len,
+    );
+    defer operations.deinit();
+
+    var offset: usize = 0;
+
+    try std.testing.expect(operations.items.len > 0);
+    for (operations.items) |operation| {
+        try std.testing.expect(operation == .Data);
+        std.mem.copy(u8, rebuilt_buffer[offset..], operation.Data);
+        offset += operation.Data.len;
+    }
+
+    try std.testing.expectEqualSlices(u8, original_buffer, rebuilt_buffer);
+}
+
+test "Operations for buffer without Reference should rebuild the original buffer - with fractional buffer size of max operation length" {
+    const max_operation_len: usize = 512;
+
+    const buffer_size = @trunc(@as(f64, @floatFromInt(max_operation_len)) * 3.564);
+    var original_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
+    defer std.testing.allocator.free(original_buffer);
+
+    var rebuilt_buffer: []u8 = try std.testing.allocator.alloc(u8, buffer_size);
+    defer std.testing.allocator.free(rebuilt_buffer);
+
+    var rand = std.rand.DefaultPrng.init(1238721);
+
+    for (original_buffer, 0..) |*item, idx| {
+        item.* = rand.random().int(u8);
+        rebuilt_buffer[idx] = 0;
+    }
+
+    const empty_signature_file = try SignatureFile.init(std.testing.allocator);
+    defer empty_signature_file.deinit();
+
+    try empty_signature_file.initializeToEmptyInMemoryFile();
+
+    const anchored_block_map = try AnchoredBlocksMap.init(empty_signature_file, std.testing.allocator);
+    defer anchored_block_map.deinit();
+
+    var incremental_state: GenerateOperationsState = undefined;
+    incremental_state.init(original_buffer.len);
+    incremental_state.in_buffer = original_buffer;
+
+    var operations = try generateOperationsForBuffer(
+        anchored_block_map.*,
+        &incremental_state,
+        std.testing.allocator,
+        max_operation_len,
+    );
+    defer operations.deinit();
+
+    var offset: usize = 0;
+
+    try std.testing.expect(operations.items.len > 0);
+    for (operations.items) |operation| {
+        try std.testing.expect(operation == .Data);
+        std.mem.copy(u8, rebuilt_buffer[offset..], operation.Data);
+        offset += operation.Data.len;
+    }
+
+    try std.testing.expectEqualSlices(u8, original_buffer, rebuilt_buffer);
 }

@@ -124,7 +124,7 @@ test "Locking directory should return correct files" {
     var io = try init(std.fs.cwd(), std.testing.allocator);
     defer io.deinit();
 
-    // // Create test data
+    // Create test data
     {
         const cwd = std.fs.cwd();
 
