@@ -404,7 +404,7 @@ pub fn main() !void {
     const command = std.meta.stringToEnum(CommandLineCommand, command_name) orelse show_main_help();
 
     var cores = std.Thread.getCpuCount() catch 4;
-    cores = 15;
+
     var thread_pool = ThreadPool.init(.{ .max_threads = @intCast(if (cores > 1) cores - 1 else cores) });
     thread_pool.spawnThreads();
 
