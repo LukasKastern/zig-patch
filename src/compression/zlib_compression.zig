@@ -1,6 +1,6 @@
-// const zlib = @cImport({
-//     @cInclude("zlib.h");
-// });
+const zlib = @cImport({
+    @cInclude("zlib.h");
+});
 
 const std = @import("std");
 const compression = @import("compression.zig");
@@ -57,7 +57,7 @@ pub const ZlibCompression = struct {
         allocator: std.mem.Allocator,
         zlib_allocator: ZlibAllocator,
 
-        // state: zlib.z_stream,
+        state: zlib.z_stream,
 
         pub fn init(allocator: std.mem.Allocator) !*ZlibDeflate {
             var deflate = try allocator.create(ZlibDeflate);
@@ -67,16 +67,16 @@ pub const ZlibCompression = struct {
                 .backing_allocator = allocator,
             };
 
-            // deflate.state = std.mem.zeroInit(zlib.z_stream, .{});
-            // deflate.state.zalloc = ZlibAllocator.allocZlib;
-            // deflate.state.zfree = ZlibAllocator.freeZlib;
-            // deflate.state.@"opaque" = &deflate.zlib_allocator;
+            deflate.state = std.mem.zeroInit(zlib.z_stream, .{});
+            deflate.state.zalloc = ZlibAllocator.allocZlib;
+            deflate.state.zfree = ZlibAllocator.freeZlib;
+            deflate.state.@"opaque" = &deflate.zlib_allocator;
 
-            const quality_level = 2;
-            _ = quality_level;
-            // if (zlib.deflateInit(&deflate.state, quality_level) != zlib.Z_OK) {
-            //     return error.ZLibInitializationFailed;
-            // }
+            const quality_level = 5;
+
+            if (zlib.deflateInit(&deflate.state, quality_level) != zlib.Z_OK) {
+                return error.ZLibInitializationFailed;
+            }
 
             deflate.compression_impl = .{ .deflate_buffer = &ZlibDeflate.deflateStream };
             deflate.allocator = allocator;
@@ -85,32 +85,29 @@ pub const ZlibCompression = struct {
         }
 
         pub fn deinit(deflate: *ZlibDeflate) void {
-            // var result = zlib.deflateEnd(&deflate.state);
-            // std.debug.assert(result == zlib.Z_OK);
+            var result = zlib.deflateEnd(&deflate.state);
+            std.debug.assert(result == zlib.Z_OK);
 
             deflate.allocator.destroy(deflate);
         }
 
         pub fn deflateStream(impl: *compression.DeflateImpl, input: []u8, output: []u8) error{DeflateError}![]u8 {
             var deflate = @fieldParentPtr(ZlibDeflate, "compression_impl", impl);
-            _ = deflate;
-            _ = input;
 
-            // deflate.state.avail_in = @intCast(c_uint, input.len);
-            // deflate.state.next_in = input.ptr;
-            // deflate.state.avail_out = @intCast(c_uint, output.len);
-            // deflate.state.next_out = output.ptr;
+            deflate.state.avail_in = @as(c_uint, @intCast(input.len));
+            deflate.state.next_in = input.ptr;
+            deflate.state.avail_out = @as(c_uint, @intCast(output.len));
+            deflate.state.next_out = output.ptr;
 
-            // var deflate_res = zlib.deflate(&deflate.state, zlib.Z_FINISH);
+            var deflate_res = zlib.deflate(&deflate.state, zlib.Z_FINISH);
 
-            // if (deflate_res != zlib.Z_STREAM_END) {
-            //     std.log.err("Zlib deflate resulted in err={}, msg={s}", .{ deflate_res, deflate.state.msg });
-            //     return error.DeflateError;
-            // }
+            if (deflate_res != zlib.Z_STREAM_END) {
+                std.log.err("Zlib deflate resulted in err={}, msg={s}", .{ deflate_res, deflate.state.msg });
+                return error.DeflateError;
+            }
 
-            // const total_out = deflate.state.total_out;
-            // return output[0..total_out];
-            return output[0..0];
+            const total_out = deflate.state.total_out;
+            return output[0..total_out];
         }
     };
 

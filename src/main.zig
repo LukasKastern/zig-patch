@@ -15,6 +15,7 @@ const operations = @import("operations.zig");
 const OperationStats = operations.OperationStats;
 const builtin = @import("builtin");
 const PatchIO = @import("io/patch_io.zig");
+const Compression = @import("compression/compression.zig");
 
 const clap = @import("clap");
 
@@ -60,10 +61,18 @@ const CommandLineCommand = enum {
 fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !void {
     const summary = "Creates a patch from an existing directory.";
 
+    const compression_options = [_][]const u8{ "None", "Brotli", "Zlib", "Zstd" };
+    comptime {
+        if (compression_options.len != @intFromEnum(Compression.CompressionImplementation.Invalid)) {
+            @compileError("Update compression updates");
+        }
+    }
+
     const params = comptime clap.parseParamsComptime(
         \\-h, --help                     Display this help message.
         \\-f, --source_folder <str>      Path to the folder to create the diff from.
         \\-s, --signature_file <str>     Signature file to which the Patch will be created.
+        \\-c, --compression <str>        Compression that will be used. Valid options are: None, Brotli, Zlib and Zstd (default)
         \\
     );
 
@@ -83,6 +92,23 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         std.debug.print("\n", .{});
         std.os.exit(0);
         return;
+    }
+
+    var compression: Compression.CompressionImplementation = Compression.Compression.Default;
+    if (parsed_args.args.compression) |compression_arg| {
+        compression = .Invalid;
+
+        for (compression_options, 0..) |option, idx| {
+            if (std.ascii.eqlIgnoreCase(option, compression_arg)) {
+                compression = @enumFromInt(idx);
+                break;
+            }
+        }
+
+        if (compression == .Invalid) {
+            std.log.err("{s}\n\n", .{"Compression method is not valid. Valid options are: None, Brotli, Zlib and Zstd"});
+            return;
+        }
     }
 
     var folder = parsed_args.args.source_folder;
@@ -148,14 +174,21 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
 
     var stats: OperationStats = .{};
 
-    // zig fmt: off
-    try operations.createPatch(folder.?, previous_signature, .{
-        .working_dir = std.fs.cwd(),
-        .thread_pool = thread_pool,
-        .allocator = allocator,
-        .progress_callback = .{.user_object = &print_helper, .callback = CreatePatchPrintHelper.onMakeSignatureProgress}
-    }, &stats);
-    // zig fmt: on
+    try operations.createPatch(
+        folder.?,
+        previous_signature,
+        .{
+            .compression = compression,
+            .operation_config = .{
+                .working_dir = std.fs.cwd(),
+                .thread_pool = thread_pool,
+                .allocator = allocator,
+                .progress_callback = .{ .user_object = &print_helper, .callback = CreatePatchPrintHelper.onMakeSignatureProgress },
+            },
+        },
+
+        &stats,
+    );
 
     var create_patch_stats = stats.create_patch_stats.?;
 
@@ -319,7 +352,20 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
     var print_helper = MakeSignaturePrintHelper{};
     var operation_stats: OperationStats = .{};
 
-    try operations.makeSignature(parsed_args.args.source_folder.?, parsed_args.args.output_file.?, .{ .working_dir = std.fs.cwd(), .thread_pool = thread_pool, .allocator = allocator, .progress_callback = .{ .user_object = &print_helper, .callback = MakeSignaturePrintHelper.onMakeSignatureProgress } }, &operation_stats);
+    try operations.makeSignature(
+        parsed_args.args.source_folder.?,
+        parsed_args.args.output_file.?,
+        .{
+            .working_dir = std.fs.cwd(),
+            .thread_pool = thread_pool,
+            .allocator = allocator,
+            .progress_callback = .{
+                .user_object = &print_helper,
+                .callback = MakeSignaturePrintHelper.onMakeSignatureProgress,
+            },
+        },
+        &operation_stats,
+    );
 
     {
         const stdout = std.io.getStdErr().writer();
@@ -357,7 +403,9 @@ pub fn main() !void {
 
     const command = std.meta.stringToEnum(CommandLineCommand, command_name) orelse show_main_help();
 
-    var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    var cores = std.Thread.getCpuCount() catch 4;
+    cores = 15;
+    var thread_pool = ThreadPool.init(.{ .max_threads = @intCast(if (cores > 1) cores - 1 else cores) });
     thread_pool.spawnThreads();
 
     switch (command) {

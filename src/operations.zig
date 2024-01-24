@@ -7,6 +7,7 @@ const SignatureFile = @import("signature_file.zig").SignatureFile;
 const PatchGeneration = @import("patch_generation.zig");
 const utils = @import("utils.zig");
 const PatchIO = @import("io/patch_io.zig");
+const CompressionImplementation = @import("compression/compression.zig").CompressionImplementation;
 
 pub const ProgressCallback = struct {
     user_object: *anyopaque,
@@ -45,6 +46,11 @@ pub const OperationConfig = struct {
     allocator: std.mem.Allocator,
     working_dir: std.fs.Dir,
     progress_callback: ?ProgressCallback = null,
+};
+
+pub const CreatePatchConfig = struct {
+    operation_config: OperationConfig,
+    compression: CompressionImplementation,
 };
 
 pub fn applyPatch(patch_file_path: []const u8, reference_folder: ?[]const u8, target_folder: []const u8, config: OperationConfig, stats: ?*OperationStats) !void {
@@ -226,7 +232,9 @@ fn findPatchStagingDir(cwd: std.fs.Dir) !std.fs.Dir {
     return error.NoSuitableStagingPathFound;
 }
 
-pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const u8, config: OperationConfig, stats: ?*OperationStats) !void {
+pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const u8, create_patch_config: CreatePatchConfig, stats: ?*OperationStats) !void {
+    var config = create_patch_config.operation_config;
+
     var allocator = config.allocator;
     var thread_pool = config.thread_pool;
     var cwd: std.fs.Dir = config.working_dir;
@@ -314,7 +322,12 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
         }
 
         var create_patch_start_sample = timer.read();
-        try PatchGeneration.createPatchV2(&patch_io, thread_pool, new_signature_file, prev_signature_file.?, allocator, .{ .build_dir = open_dir, .staging_dir = staging_dir }, create_patch_stats, config.progress_callback);
+        try PatchGeneration.createPatchV2(&patch_io, thread_pool, new_signature_file, prev_signature_file.?, allocator, .{
+            .build_dir = open_dir,
+            .staging_dir = staging_dir,
+            .compression = create_patch_config.compression,
+        }, create_patch_stats, config.progress_callback);
+
         var create_patch_finish_sample = timer.read();
 
         if (stats) |*operation_stats| {

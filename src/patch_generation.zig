@@ -7,6 +7,7 @@ const MaxDataOperationLength = @import("block_patching.zig").MaxDataOperationLen
 
 const PatchHeader = @import("patch_header.zig").PatchHeader;
 const BlockSize = @import("block.zig").BlockSize;
+const CompressionImplementation = @import("compression/compression.zig").CompressionImplementation;
 const Compression = @import("compression/compression.zig").Compression;
 const CreatePatchStats = @import("operations.zig").OperationStats.CreatePatchStats;
 const ProgressCallback = @import("operations.zig").ProgressCallback;
@@ -36,6 +37,7 @@ const CreatePatchOptions = struct {
     max_work_unit_size: usize = DefaultMaxWorkUnitSize,
     staging_dir: std.fs.Dir,
     build_dir: std.fs.Dir,
+    compression: CompressionImplementation,
 };
 
 const CreatePatchOperationsOptions = struct {
@@ -188,6 +190,8 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
         start_time: i128,
 
+        compression: CompressionImplementation,
+
         stats: struct {
             total_blocks: usize = 0,
             changed_blocks: usize = 0,
@@ -265,7 +269,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 //TODO: Can we use a fallback allocator?
                 var deflating_allocator = std.heap.c_allocator;
 
-                var deflating = Compression.Deflating.init(Compression.Default, deflating_allocator) catch unreachable;
+                var deflating = Compression.Deflating.init(self.compression, deflating_allocator) catch unreachable;
                 defer deflating.deinit();
 
                 var prev_offset = self.write_buffer.?.written_bytes;
@@ -348,13 +352,15 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         .tasks_completed = 0,
     };
 
-    var patch_header = try PatchHeader.init(new_signature, old_signature, allocator);
+    var patch_header = try PatchHeader.init(new_signature, old_signature, options.compression, allocator);
     defer patch_header.deinit();
 
     const patch_handle = try patch_io.createFile(options.staging_dir.fd, "Patch.pwd");
 
     const patch = std.fs.File{ .handle = patch_handle };
     defer patch.close();
+
+    var last_progress_reported_at = std.time.nanoTimestamp();
 
     var patch_file_offset: usize = blk: {
         var num_sections: usize = 0;
@@ -373,7 +379,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             }
         }
 
-        std.log.info("Num sections: {}", .{num_sections});
         try patch_header.sections.resize(num_sections);
         defer patch_header.sections.resize(0) catch unreachable;
 
@@ -424,6 +429,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     .generate_operations_state = undefined,
                     .stats = .{},
                     .start_time = std.time.nanoTimestamp(),
+                    .compression = options.compression,
                 };
                 operation_slots[slot].generate_operations_state.init(file.size);
 
@@ -596,7 +602,10 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
         if (progress_data.progress_callback) |progress_callback_unwrapped| {
             var elapsed_progress = (@as(f32, @floatFromInt(progress_data.tasks_completed)) / @as(f32, @floatFromInt(progress_data.total_num_tasks))) * 100;
-            progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Generating Patches");
+            if (std.time.nanoTimestamp() > last_progress_reported_at + std.time.ns_per_ms * 500) {
+                last_progress_reported_at = std.time.nanoTimestamp();
+                progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Generating Patches");
+            }
         }
 
         if (!has_pending_write) write_buffer_to_disk: {
@@ -642,19 +651,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     buffer.is_io_pending = false;
 
                     buffer.has_pending_write.* = false;
-
-                    var write_end_time = std.time.nanoTimestamp();
-
-                    if (buffer.file_idx == 0 and buffer.start_sequence == 0) {
-                        std.log.info(
-                            "Wrote {} bytes in {}ms {any}",
-                            .{
-                                buffer.written_bytes,
-                                @divTrunc(write_end_time - buffer.write_start_time, std.time.ns_per_ms),
-                                buffer.buffer[0..buffer.written_bytes],
-                            },
-                        );
-                    }
 
                     buffer.written_bytes = ~@as(usize, 0);
                 }

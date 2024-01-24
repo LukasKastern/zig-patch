@@ -101,9 +101,21 @@ pub const BrotliCompression = struct {
             var total_out: usize = 0;
             _ = brotli.BrotliEncoderSetParameter(deflate.encoder_instance, brotli.BROTLI_PARAM_SIZE_HINT, @as(u32, @intCast(input.len)));
 
-            var result = brotli.BrotliEncoderCompressStream(deflate.encoder_instance, brotli.BROTLI_OPERATION_FINISH, &available_in, &next_in, &available_out, &next_out, &total_out);
+            var result = brotli.BrotliEncoderCompressStream(
+                deflate.encoder_instance,
+                brotli.BROTLI_OPERATION_FINISH,
+                &available_in,
+                &next_in,
+                &available_out,
+                &next_out,
+                &total_out,
+            );
 
-            if (result == 0) {
+            if (brotli.BrotliEncoderIsFinished(deflate.encoder_instance) == brotli.BROTLI_FALSE) {
+                return error.DeflateError;
+            }
+
+            if (result != brotli.BROTLI_TRUE) {
                 return error.DeflateError;
             }
 
@@ -155,7 +167,8 @@ pub const BrotliCompression = struct {
 
             var decompress_result = brotli.BrotliDecoderDecompressStream(inflate_impl.decoder_instance, &available_in, &next_in, &available_out, &next_out, &total_out);
 
-            if (decompress_result == 0 or total_out > output.len) {
+            if (decompress_result != brotli.BROTLI_DECODER_RESULT_SUCCESS or total_out > output.len) {
+                std.log.info("Result: {}, {}, {}, {}", .{ decompress_result, available_in, available_out, total_out });
                 return error.InflateError;
             }
         }

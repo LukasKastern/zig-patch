@@ -9,6 +9,7 @@ const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
 const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
 const BlockSize = @import("block.zig").BlockSize;
 const Compression = @import("compression/compression.zig").Compression;
+const CompressionImplementation = @import("compression/compression.zig").CompressionImplementation;
 const ApplyPatchStats = @import("operations.zig").OperationStats.ApplyPatchStats;
 const ProgressCallback = @import("operations.zig").ProgressCallback;
 const PatchIO = @import("io/patch_io.zig");
@@ -234,6 +235,8 @@ const ApplyPatchOperation = struct {
     per_thread_data: struct {
         inflation_buffer: []const []u8,
     },
+
+    compression: CompressionImplementation,
 };
 
 fn inflateBuffer(task: *ThreadPool.Task) void {
@@ -241,7 +244,10 @@ fn inflateBuffer(task: *ThreadPool.Task) void {
     inflateBufferImpl(self) catch |e| {
         switch (e) {
             else => {
-                std.log.err("Error {s} occured during inflateBuffer task", .{@errorName(e)});
+                std.log.err(
+                    "Error {s} occured during inflateBuffer task for file {} and section {}",
+                    .{ @errorName(e), self.file_idx, self.current_section },
+                );
                 unreachable;
             },
         }
@@ -251,7 +257,7 @@ fn inflateBuffer(task: *ThreadPool.Task) void {
 fn inflateBufferImpl(self: *ApplyPatchOperation) !void {
 
     //TODO: Can we preallocate the worst case memory?
-    var inflating = try Compression.Infalting.init(Compression.Default, std.heap.c_allocator);
+    var inflating = try Compression.Infalting.init(self.compression, std.heap.c_allocator);
     defer inflating.deinit();
 
     var read_buffer_stream = std.io.fixedBufferStream(self.read_buffer);
@@ -343,6 +349,7 @@ pub fn applyPatch(
     for (0..MaxConcurrentPatchOperations) |idx| {
         available_operation_slots.appendAssumeCapacity(idx);
 
+        patch_operations[idx].compression = patch.compression;
         patch_operations[idx].read_buffer = try allocator.alloc(u8, MaxOperationOutputSize);
         patch_operations[idx].inflated_buffer = try allocator.alloc(u8, MaxOperationOutputSize);
         patch_operations[idx].inflate_task = .{
@@ -372,6 +379,8 @@ pub fn applyPatch(
         }
         break :blk counter;
     };
+
+    var patch_size = try patch_file.getEndPos();
 
     var last_used_file_idx_in_patch: usize = 0;
     var num_files_processed: usize = 0;
@@ -434,12 +443,14 @@ pub fn applyPatch(
                     var offset = patch.sections.items[section_idx_in_patch].operations_start_pos_in_file;
 
                     var size = blk: {
-                        var file = patch.new.getFile(operation.file_idx);
-
-                        break :blk @min(
-                            file.size - DefaultMaxWorkUnitSize * operation.current_section,
-                            DefaultMaxWorkUnitSize,
-                        );
+                        // Read up until next section or end of patch.
+                        var curr_section = patch.sections.items[section_idx_in_patch];
+                        if (section_idx_in_patch + 1 < patch.sections.items.len) {
+                            var next_section = patch.sections.items[section_idx_in_patch + 1];
+                            break :blk next_section.operations_start_pos_in_file - curr_section.operations_start_pos_in_file;
+                        } else {
+                            break :blk patch_size - curr_section.operations_start_pos_in_file;
+                        }
                     };
 
                     const ApplyPatchReadCallback = struct {

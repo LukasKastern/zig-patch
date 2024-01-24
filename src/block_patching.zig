@@ -264,10 +264,8 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
             const last_value = state.last_value;
 
             const new_value = if (current_block.len > 0) current_block[current_block.len - 1] else 0;
-            //TODO: Make this incremental again.
-            state.rolling_hash.nextImpl(@as(u32, @intCast(last_value)), new_value, distance);
 
-            // rolling_hash.next(current_block, tail - 1, head - 1);
+            state.rolling_hash.nextImpl(@as(u32, @intCast(last_value)), new_value, distance);
         }
 
         std.debug.assert(current_block.len > 0);
@@ -278,7 +276,6 @@ pub fn generateOperationsForBufferIncremental(block_map: AnchoredBlocksMap, stat
         var known_block: ?AnchoredBlock = null;
 
         if (block_map.hasAnchoredBlocksForWeakHash(hash)) {
-            // @setRuntimeSafety(false);
             // Hash found. Calculate MD5 and see if we match with a known block.
 
             var block_hash: BlockHash = .{
