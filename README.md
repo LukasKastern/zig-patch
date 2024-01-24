@@ -9,7 +9,7 @@ It implements a modified version of the [wharf spec](https://itch.io/docs/wharf/
 <!-- ## Benchmarks TODO -->
 
 ## Prequisites
-First download the required [Zig Compiler (0.11) version](https://ziglang.org/download/).
+First download the required [Zig (0.11)](https://ziglang.org/download/).
 
 ## Build the project
 
@@ -44,7 +44,6 @@ In this case only blocks that haven't existed in the reference will be written t
 
 ```
 zig-patch create --source_folder "/MyBuildV2" --signature_file "SignatureOfMyPreviousBuild.signature"
-
 ```
 
 ### Applying A Patch
@@ -63,4 +62,5 @@ zig-patch apply --patch "/PatchFile.pwd" --reference_folder "MyBuild" --target_f
 
 Some commands allow additional arguments. Like the worker count to use or compression level. 
 
-Run ***zig-patch <cmd> --help*** for more info.
+Run ***zig-patch command --help*** for more info.
+
