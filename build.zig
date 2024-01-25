@@ -11,6 +11,8 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardOptimizeOption(.{});
 
+    var clap = b.dependency("zig_clap", .{}).module("clap");
+
     var zlib_dep = b.dependency("zlib", .{
         .target = target,
         .optimize = mode,
@@ -94,6 +96,7 @@ pub fn build(b: *std.build.Builder) void {
     test_exe.linkLibrary(zlib_dep.artifact("z"));
     test_exe.linkLibrary(zstd);
     test_exe.addIncludePath(.{ .path = zstd_root });
+    test_exe.dwarf_format = .@"32";
 
     const install_test = b.addInstallArtifact(test_exe, .{});
 
@@ -110,6 +113,5 @@ pub fn build(b: *std.build.Builder) void {
         run_test_step.dependOn(&run_test_cmd.step);
     } // <<< TEST - BUILD AND RUN <<<
 
-    var clap = b.dependency("zig_clap", .{}).module("clap");
     exe.addModule("clap", clap);
 }

@@ -9,65 +9,81 @@ const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
 const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
 const BlockSize = @import("block.zig").BlockSize;
 const Compression = @import("compression/compression.zig").Compression;
+const CompressionImplementation = @import("compression/compression.zig").CompressionImplementation;
 const ApplyPatchStats = @import("operations.zig").OperationStats.ApplyPatchStats;
 const ProgressCallback = @import("operations.zig").ProgressCallback;
+const PatchIO = @import("io/patch_io.zig");
 
-pub fn createFileStructure(target_dir: std.fs.Dir, patch: *PatchHeader) !void {
-    const old_signature = patch.old;
+pub fn createFileStructure(patch_io: *PatchIO, target_dir: std.fs.Dir, patch: *PatchHeader, allocator: std.mem.Allocator) !std.ArrayList(PatchIO.PlatformHandle) {
     const new_signature = patch.new;
 
-    // Delete all files that do not exist anymore
-    for (old_signature.files.items) |file| {
-        var does_file_still_exist = false;
+    var dir_lookup = std.StringHashMap(PatchIO.PlatformHandle).init(allocator);
+    defer dir_lookup.deinit();
 
-        for (new_signature.files.items) |new_signature_file| {
-            does_file_still_exist = does_file_still_exist or std.mem.eql(u8, new_signature_file.name, file.name);
+    var patch_files = try std.ArrayList(PatchIO.PlatformHandle).initCapacity(allocator, patch.new.numFiles());
+    errdefer {
+        for (patch_files.items) |handle| {
+            patch_io.closeHandle(handle);
         }
-
-        if (!does_file_still_exist) {
-            try target_dir.deleteFile(file.name);
-        }
+        patch_files.deinit();
     }
 
-    // Delete all directories that do not exist anymore
-    for (old_signature.directories.items) |directory| {
-        var does_dir_still_exist = false;
-
-        for (new_signature.directories.items) |new_directory_file| {
-            does_dir_still_exist = does_dir_still_exist or std.mem.eql(u8, new_directory_file.path, directory.path);
+    var directories = try std.ArrayList(PatchIO.PlatformHandle).initCapacity(allocator, patch.new.numDirectories());
+    defer {
+        for (directories.items) |dir| {
+            patch_io.closeHandle(dir);
         }
-
-        if (!does_dir_still_exist) {
-            //TODO: Should we check if the directory is empty (lukas)?
-            try target_dir.deleteTree(directory.path);
-        }
+        directories.deinit();
     }
 
-    // Now reverse the order operation and create all directories + files that did not exist in the old signature
-    for (new_signature.directories.items) |directory| {
-        var did_dir_exist = false;
+    for (0..new_signature.numDirectories()) |directory_idx| {
+        var directory = new_signature.getDirectory(directory_idx);
 
-        for (old_signature.directories.items) |old_directory_file| {
-            did_dir_exist = did_dir_exist or std.mem.eql(u8, old_directory_file.path, directory.path);
+        // Get first directory delimiter.
+        var last_index_maybe = std.mem.lastIndexOfLinear(u8, directory.path[0 .. directory.path.len - 1], "/");
+        var parent_directory: PatchIO.PlatformHandle = target_dir.fd;
+        var directory_name = directory.path;
+
+        if (last_index_maybe) |last_index| {
+            var looking_for = directory.path[0 .. last_index + 1];
+            parent_directory = dir_lookup.get(looking_for) orelse {
+                std.log.err("Couldn't find parent directory for {s}. Patch might be corrupt. {s}", .{ directory.path, looking_for });
+                return error.ParentDirectoryNotFound;
+            };
+
+            directory_name = directory.path[last_index + 1 ..];
         }
 
-        if (!did_dir_exist) {
-            try target_dir.makePath(directory.path);
-        }
+        // Remove path end.
+        directory_name = directory_name[0 .. directory_name.len - 1];
+
+        var dir_handle = try patch_io.createDirectory(parent_directory, directory_name);
+        try dir_lookup.put(directory.path, dir_handle);
+        directories.appendAssumeCapacity(dir_handle);
     }
 
-    for (new_signature.files.items) |file| {
-        var did_file_exist = false;
+    for (0..new_signature.numFiles()) |file_idx| {
+        var file = new_signature.getFile(file_idx);
 
-        for (old_signature.files.items) |old_file| {
-            did_file_exist = did_file_exist or std.mem.eql(u8, old_file.name, file.name);
+        var last_index_maybe = std.mem.lastIndexOfLinear(u8, file.name[0 .. file.name.len - 1], "/");
+        var parent_directory: PatchIO.PlatformHandle = target_dir.fd;
+
+        var file_name = file.name;
+        if (last_index_maybe) |last_index| {
+            var looking_for = file.name[0 .. last_index + 1];
+
+            parent_directory = dir_lookup.get(looking_for) orelse {
+                std.log.err("Couldn't find parent directory for {s}. Patch might be corrupt. {s}", .{ file.name, looking_for });
+                return error.ParentDirectoryNotFound;
+            };
+
+            file_name = file.name[last_index + 1 ..];
         }
 
-        if (!did_file_exist) {
-            var new_file_fs = try target_dir.createFile(file.name, .{});
-            new_file_fs.close();
-        }
+        patch_files.appendAssumeCapacity(try patch_io.createFile(parent_directory, file_name));
     }
+
+    return patch_files;
 }
 
 const ApplyPatchTask = struct {
@@ -115,6 +131,7 @@ const ApplyPatchTask = struct {
         var target_file = try self.target_dir.openFile(self.file.name, .{
             .mode = .write_only,
         });
+
         defer target_file.close();
         try target_file.setEndPos(self.file.size);
 
@@ -128,10 +145,6 @@ const ApplyPatchTask = struct {
 
             var operations_allocator = fixed_buffer_allocator.allocator();
             var compressed_section_size = try file_reader.readIntBig(usize);
-
-            if (compressed_section_size > (PatchGeneration.DefaultMaxWorkUnitSize + 256)) {
-                return error.CompressedSectionIsLargerThanMaxSize;
-            }
 
             var compressed_data_buffer = try operations_allocator.alloc(u8, compressed_section_size);
             try file_reader.readNoEof(compressed_data_buffer);
@@ -156,7 +169,9 @@ const ApplyPatchTask = struct {
                     var block_range = operation.BlockRange;
                     var block = self.anchored_blocks_map.getBlock(block_range.file_index, block_range.block_index);
 
-                    var src_file = self.old_signature.files.items[block.file_index];
+                    var old_signature_file_data = self.old_signature.data.?.InMemorySignatureFile;
+
+                    var src_file = old_signature_file_data.files.items[block.file_index];
                     var file = try self.source_dir.?.openFile(src_file.name, .{});
                     defer file.close();
 
@@ -179,107 +194,388 @@ const ApplyPatchTask = struct {
     }
 };
 
-pub fn applyPatch(working_dir: std.fs.Dir, source_dir: ?std.fs.Dir, target_dir: std.fs.Dir, patch_file_path: []const u8, patch: *PatchHeader, thread_pool: *ThreadPool, allocator: std.mem.Allocator, progress_callback: ?ProgressCallback, stats: ?*ApplyPatchStats) !void {
-    var per_thread_operations_buffer = try allocator.alloc([]u8, thread_pool.max_threads);
-    defer allocator.free(per_thread_operations_buffer);
+const ApplyPatchOperation = struct {
+    const State = enum {
+        Idle,
+        ReadingFile,
+        Inflating,
+        Writing,
+    };
 
-    for (per_thread_operations_buffer) |*operations_buffer| {
-        operations_buffer.* = try allocator.alloc(u8, PatchGeneration.DefaultMaxWorkUnitSize * 6 + 8096);
+    state: State,
+
+    file_idx: usize,
+
+    current_section: usize,
+
+    last_section_idx_in_patch: ?usize,
+
+    read_buffer: []u8,
+    is_read_buffer_rdy: bool,
+
+    inflated_buffer: []u8,
+
+    inflate_task: ThreadPool.Task,
+
+    is_inflate_done: std.atomic.Atomic(u32),
+
+    operations_iterator: BlockPatching.SerializedOperationIterator,
+
+    patched_file_handle: PatchIO.PlatformHandle,
+    patch_file_offset: usize,
+
+    active_patch_operation: ?struct {
+        operation: BlockPatching.PatchOperation,
+        is_write_pending: bool,
+
+        patch_io: *PatchIO,
+        block_range_buffer: []u8,
+    },
+
+    per_thread_data: struct {
+        inflation_buffer: []const []u8,
+    },
+
+    compression: CompressionImplementation,
+};
+
+fn inflateBuffer(task: *ThreadPool.Task) void {
+    var self = @fieldParentPtr(ApplyPatchOperation, "inflate_task", task);
+    inflateBufferImpl(self) catch |e| {
+        switch (e) {
+            else => {
+                std.log.err(
+                    "Error {s} occured during inflateBuffer task for file {} and section {}",
+                    .{ @errorName(e), self.file_idx, self.current_section },
+                );
+                unreachable;
+            },
+        }
+    };
+}
+
+fn inflateBufferImpl(self: *ApplyPatchOperation) !void {
+
+    //TODO: Can we preallocate the worst case memory?
+    var inflating = try Compression.Infalting.init(self.compression, std.heap.c_allocator);
+    defer inflating.deinit();
+
+    var read_buffer_stream = std.io.fixedBufferStream(self.read_buffer);
+
+    var counting_reader = std.io.countingReader(read_buffer_stream.reader());
+
+    var compressed_section_size = try counting_reader.reader().readIntBig(usize);
+
+    var compressed_buffer = self.read_buffer[counting_reader.bytes_read .. counting_reader.bytes_read + compressed_section_size];
+
+    try inflating.inflateBuffer(compressed_buffer, self.inflated_buffer);
+
+    try self.operations_iterator.init(self.inflated_buffer);
+    self.is_inflate_done.store(1, .Release);
+}
+
+pub fn applyPatch(
+    working_dir: std.fs.Dir,
+    source_dir: ?std.fs.Dir,
+    target_dir: std.fs.Dir,
+    patch_file_path: []const u8,
+    patch: *PatchHeader,
+    thread_pool: *ThreadPool,
+    allocator: std.mem.Allocator,
+    progress_callback: ?ProgressCallback,
+    patch_io: *PatchIO,
+    patch_file: std.fs.File,
+    stats: ?*ApplyPatchStats,
+    patch_files: std.ArrayList(PatchIO.PlatformHandle),
+) !void {
+    _ = target_dir;
+    _ = progress_callback;
+    _ = patch_file_path;
+    _ = working_dir;
+
+    var source_files = blk: {
+        var files = try std.ArrayList(PatchIO.PlatformHandle).initCapacity(allocator, patch.old.numFiles());
+        errdefer {
+            for (files.items) |file| {
+                patch_io.closeHandle(file);
+            }
+            files.deinit();
+        }
+
+        for (0..patch.old.numFiles()) |file_idx| {
+            var file = patch.old.getFile(file_idx);
+            files.appendAssumeCapacity(try patch_io.openFile(source_dir.?.fd, file.name));
+        }
+
+        break :blk files;
+    };
+    defer {
+        for (source_files.items) |file| {
+            patch_io.closeHandle(file);
+        }
+        source_files.deinit();
+    }
+
+    var reference_anchored_blocks_map = try AnchoredBlocksMap.init(patch.old, allocator);
+    defer reference_anchored_blocks_map.deinit();
+
+    var patch_file_handle = patch_file.handle;
+
+    const MaxConcurrentPatchOperations = thread_pool.num_threads;
+
+    var patch_operations = try allocator.alloc(ApplyPatchOperation, MaxConcurrentPatchOperations);
+    defer allocator.free(patch_operations);
+
+    var available_operation_slots = try std.ArrayList(usize).initCapacity(allocator, MaxConcurrentPatchOperations);
+    defer available_operation_slots.deinit();
+
+    const DefaultMaxWorkUnitSize = BlockSize * 128;
+    const MaxOperationOverhead = 1024;
+    const MaxOperationOutputSize = DefaultMaxWorkUnitSize + MaxOperationOverhead;
+
+    var per_thread_inflation_buffer = try allocator.alloc([]u8, thread_pool.max_threads);
+    defer allocator.free(per_thread_inflation_buffer);
+
+    for (per_thread_inflation_buffer) |*inflation_buffer| {
+        inflation_buffer.* = try allocator.alloc(u8, DefaultMaxWorkUnitSize * 4);
     }
 
     defer {
-        for (per_thread_operations_buffer) |operations_buffer| {
-            allocator.free(operations_buffer);
+        for (per_thread_inflation_buffer) |inflation_buffer| {
+            allocator.free(inflation_buffer);
         }
     }
 
-    var per_thread_read_buffer = try allocator.alloc([]u8, thread_pool.max_threads);
-    defer allocator.free(per_thread_read_buffer);
+    for (0..MaxConcurrentPatchOperations) |idx| {
+        available_operation_slots.appendAssumeCapacity(idx);
 
-    for (per_thread_read_buffer) |*operations_buffer| {
-        operations_buffer.* = try allocator.alloc(u8, BlockSize);
-    }
-
-    defer {
-        for (per_thread_read_buffer) |operations_buffer| {
-            allocator.free(operations_buffer);
-        }
-    }
-
-    var per_thread_patch_files = try allocator.alloc(std.fs.File, thread_pool.max_threads);
-    defer allocator.free(per_thread_patch_files);
-
-    for (per_thread_patch_files) |*per_thread_patch_file| {
-        per_thread_patch_file.* = try working_dir.openFile(patch_file_path, .{});
-    }
-
-    defer {
-        for (per_thread_patch_files) |*per_thread_patch_file| {
-            per_thread_patch_file.close();
-        }
-    }
-
-    var per_thread_applied_bytes = try allocator.alloc(usize, thread_pool.max_threads);
-    defer allocator.free(per_thread_applied_bytes);
-
-    for (per_thread_applied_bytes) |*applied_bytes| {
-        applied_bytes.* = 0;
-    }
-
-    var tasks = try allocator.alloc(ApplyPatchTask, patch.sections.items.len);
-    defer allocator.free(tasks);
-
-    var anchored_blocks_map = try AnchoredBlocksMap.init(patch.old.*, allocator);
-    defer anchored_blocks_map.deinit();
-
-    var batch = ThreadPool.Batch{};
-
-    var sections_remaining = std.atomic.Atomic(usize).init(patch.sections.items.len);
-    var are_sections_done = std.atomic.Atomic(u32).init(0);
-
-    var task_idx: usize = 0;
-    while (task_idx < patch.sections.items.len) : (task_idx += 1) {
-        var section = patch.sections.items[task_idx];
-
-        // zig fmt: off
-        tasks[task_idx] = .{ 
-            .per_thread_applied_bytes = per_thread_applied_bytes, 
-            .per_thread_read_buffers = per_thread_read_buffer, 
-            .old_signature = patch.old, 
-            .anchored_blocks_map = anchored_blocks_map, 
-            .source_dir = source_dir, 
-            .per_thread_operations_buffer = per_thread_operations_buffer, 
-            .section = patch.sections.items[task_idx], 
-            .target_dir = target_dir, 
-            .are_sections_done = &are_sections_done, 
-            .sections_remaining = &sections_remaining, 
-            .per_thread_patch_files = per_thread_patch_files, 
-            .task = ThreadPool.Task{ .callback = ApplyPatchTask.applyPatch }, 
-            .file = patch.new.files.items[section.file_idx] 
+        patch_operations[idx].compression = patch.compression;
+        patch_operations[idx].read_buffer = try allocator.alloc(u8, MaxOperationOutputSize);
+        patch_operations[idx].inflated_buffer = try allocator.alloc(u8, MaxOperationOutputSize);
+        patch_operations[idx].inflate_task = .{
+            .callback = inflateBuffer,
         };
-        // zig fmt: on
-
-        batch.push(ThreadPool.Batch.from(&tasks[task_idx].task));
+        patch_operations[idx].per_thread_data = .{
+            .inflation_buffer = per_thread_inflation_buffer,
+        };
     }
 
-    thread_pool.schedule(batch);
+    defer {
+        for (0..MaxConcurrentPatchOperations) |idx| {
+            allocator.free(patch_operations[idx].read_buffer);
+            allocator.free(patch_operations[idx].inflated_buffer);
+        }
+    }
 
-    var num_sections_remaining = sections_remaining.load(.Acquire);
-    while (num_sections_remaining != 0 and are_sections_done.load(.Acquire) == 0) {
-        if (progress_callback) |progress_callback_unwrapped| {
-            var elapsed_progress = (1.0 - @as(f32, @floatFromInt(num_sections_remaining)) / @as(f32, @floatFromInt(patch.sections.items.len))) * 100;
-            progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Merging Patch Sections");
+    var running_operations = try std.ArrayList(usize).initCapacity(allocator, MaxConcurrentPatchOperations);
+    defer running_operations.deinit();
+
+    var num_files_with_data = blk: {
+        var counter: usize = 0;
+        for (0..patch.new.numFiles()) |file_idx| {
+            if (patch.new.getFile(file_idx).size > 0) {
+                counter += 1;
+            }
+        }
+        break :blk counter;
+    };
+
+    var patch_size = try patch_file.getEndPos();
+
+    var last_used_file_idx_in_patch: usize = 0;
+    var num_files_processed: usize = 0;
+
+    apply_patch_loop: while (true) {
+        while (available_operation_slots.items.len > 0 and num_files_processed < num_files_with_data) {
+            const operation_slot_idx = available_operation_slots.orderedRemove(available_operation_slots.items.len - 1);
+            var operation = &patch_operations[operation_slot_idx];
+
+            // Skip empty files
+            while (patch.new.getFile(last_used_file_idx_in_patch).size == 0) {
+                last_used_file_idx_in_patch += 1;
+            }
+
+            operation.file_idx = last_used_file_idx_in_patch;
+            operation.current_section = 0;
+            operation.is_read_buffer_rdy = false;
+            operation.state = .Idle;
+            operation.last_section_idx_in_patch = null;
+            operation.patch_file_offset = 0;
+            operation.active_patch_operation = null;
+
+            operation.patched_file_handle = patch_files.items[last_used_file_idx_in_patch];
+
+            running_operations.appendAssumeCapacity(operation_slot_idx);
+
+            last_used_file_idx_in_patch += 1;
+            num_files_processed += 1;
         }
 
-        std.time.sleep(std.time.ns_per_ms * 100);
-        num_sections_remaining = sections_remaining.load(.Acquire);
-    }
+        var running_operation_idx: isize = 0;
+        while (running_operation_idx < running_operations.items.len) : (running_operation_idx += 1) {
+            var running_operation = running_operations.items[@intCast(running_operation_idx)];
 
-    if (stats) |stats_unwrapped| {
-        stats_unwrapped.total_patch_size_bytes = 0;
+            var operation = &patch_operations[running_operation];
 
-        for (per_thread_applied_bytes) |applied_bytes| {
-            stats_unwrapped.total_patch_size_bytes += applied_bytes;
+            switch (operation.state) {
+                .Idle => {
+                    var section_idx_in_patch = blk: {
+                        // Start searching for the next section based on the last idx we had in the patch.
+                        var last_section = operation.last_section_idx_in_patch orelse 0;
+                        for (patch.sections.items[last_section..], 0..) |section, idx| {
+                            if (section.file_idx == operation.file_idx) {
+                                break :blk last_section + idx;
+                            }
+                        }
+                        break :blk ~@as(usize, 0);
+                    };
+
+                    if (section_idx_in_patch == ~@as(usize, 0)) {
+                        // No more sections remaining for this patch.
+                        available_operation_slots.appendAssumeCapacity(running_operation);
+                        _ = running_operations.swapRemove(@intCast(running_operation_idx));
+                        running_operation_idx -= 1;
+                        continue;
+                    }
+
+                    operation.last_section_idx_in_patch = section_idx_in_patch;
+
+                    var offset = patch.sections.items[section_idx_in_patch].operations_start_pos_in_file;
+
+                    var size = blk: {
+                        // Read up until next section or end of patch.
+                        var curr_section = patch.sections.items[section_idx_in_patch];
+                        if (section_idx_in_patch + 1 < patch.sections.items.len) {
+                            var next_section = patch.sections.items[section_idx_in_patch + 1];
+                            break :blk next_section.operations_start_pos_in_file - curr_section.operations_start_pos_in_file;
+                        } else {
+                            break :blk patch_size - curr_section.operations_start_pos_in_file;
+                        }
+                    };
+
+                    const ApplyPatchReadCallback = struct {
+                        fn callback(ctx: *anyopaque) void {
+                            var op: *ApplyPatchOperation = @ptrCast(@alignCast(ctx));
+                            op.is_read_buffer_rdy = true;
+                        }
+                    };
+
+                    operation.state = .ReadingFile;
+
+                    try patch_io.readFile(
+                        patch_file_handle,
+                        offset,
+                        operation.read_buffer[0..size],
+                        ApplyPatchReadCallback.callback,
+                        operation,
+                    );
+                },
+                .ReadingFile => {
+                    if (operation.is_read_buffer_rdy) {
+                        operation.is_read_buffer_rdy = false;
+                        operation.state = .Inflating;
+                        operation.is_inflate_done.store(0, .Release);
+                        thread_pool.schedule(ThreadPool.Batch.from(&operation.inflate_task));
+                    }
+                },
+                .Inflating => {
+                    if (operation.is_inflate_done.load(.Acquire) == 1) {
+                        operation.state = .Writing;
+                    }
+                },
+                .Writing => {
+                    if (operation.active_patch_operation == null) {
+
+                        // Get next operation from iterator.
+                        if (try operation.operations_iterator.nextOperation()) |patch_op| {
+                            switch (patch_op) {
+                                .Data => |data_op| {
+                                    const WriteDataIoCallback = struct {
+                                        fn callback(ctx: *anyopaque) void {
+                                            var op: *ApplyPatchOperation = @ptrCast(@alignCast(ctx));
+                                            op.active_patch_operation = null;
+                                        }
+                                    };
+
+                                    operation.active_patch_operation = .{
+                                        .operation = patch_op,
+                                        .is_write_pending = true,
+                                        .patch_io = patch_io,
+                                        .block_range_buffer = undefined,
+                                    };
+
+                                    try patch_io.writeFile(
+                                        operation.patched_file_handle,
+                                        operation.patch_file_offset,
+                                        data_op,
+                                        WriteDataIoCallback.callback,
+                                        operation,
+                                    );
+
+                                    operation.patch_file_offset += data_op.len;
+
+                                    if (stats) |stats_unwrapped| {
+                                        stats_unwrapped.total_patch_size_bytes += data_op.len;
+                                    }
+                                },
+                                .BlockRange => |block_range| {
+                                    //TODO: Handle block span.
+                                    var block = reference_anchored_blocks_map.getBlock(block_range.file_index, block_range.block_index);
+                                    var src_file = source_files.items[block.file_index];
+
+                                    const BlockRangeCallbacks = struct {
+                                        fn writeCallback(ctx: *anyopaque) void {
+                                            var op: *ApplyPatchOperation = @ptrCast(@alignCast(ctx));
+                                            op.active_patch_operation = null;
+                                        }
+
+                                        fn readReferenceCallback(ctx: *anyopaque) void {
+                                            var op: *ApplyPatchOperation = @ptrCast(@alignCast(ctx));
+
+                                            op.active_patch_operation.?.patch_io.writeFile(
+                                                op.patched_file_handle,
+                                                op.patch_file_offset,
+                                                op.active_patch_operation.?.block_range_buffer,
+                                                writeCallback,
+                                                op,
+                                            ) catch unreachable; //FIX this
+
+                                            op.patch_file_offset += op.active_patch_operation.?.block_range_buffer.len;
+                                        }
+                                    };
+
+                                    operation.active_patch_operation = .{
+                                        .operation = patch_op,
+                                        .is_write_pending = true,
+                                        .patch_io = patch_io,
+                                        .block_range_buffer = operation.read_buffer[0 .. BlockSize - block.short_size],
+                                    };
+
+                                    try patch_io.readFile(
+                                        src_file,
+                                        block.block_index * BlockSize,
+                                        operation.active_patch_operation.?.block_range_buffer,
+                                        BlockRangeCallbacks.readReferenceCallback,
+                                        operation,
+                                    );
+                                },
+                                else => unreachable, //TODO:
+                            }
+                        } else {
+                            operation.last_section_idx_in_patch.? += 1;
+                            operation.state = .Idle;
+                        }
+                    }
+                },
+            }
+        }
+
+        patch_io.tick();
+
+        if (num_files_processed == num_files_with_data and running_operations.items.len == 0) {
+            break :apply_patch_loop;
+        } else {
+            continue :apply_patch_loop;
         }
     }
 }

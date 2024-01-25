@@ -6,6 +6,8 @@ const ApplyPatch = @import("apply_patch.zig");
 const SignatureFile = @import("signature_file.zig").SignatureFile;
 const PatchGeneration = @import("patch_generation.zig");
 const utils = @import("utils.zig");
+const PatchIO = @import("io/patch_io.zig");
+const CompressionImplementation = @import("compression/compression.zig").CompressionImplementation;
 
 pub const ProgressCallback = struct {
     user_object: *anyopaque,
@@ -46,13 +48,23 @@ pub const OperationConfig = struct {
     progress_callback: ?ProgressCallback = null,
 };
 
-pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, config: OperationConfig, stats: ?*OperationStats) !void {
+pub const CreatePatchConfig = struct {
+    operation_config: OperationConfig,
+    compression: CompressionImplementation,
+};
+
+pub fn applyPatch(patch_file_path: []const u8, reference_folder: ?[]const u8, target_folder: []const u8, config: OperationConfig, stats: ?*OperationStats) !void {
     var allocator = config.allocator;
     var thread_pool = config.thread_pool;
     var cwd: std.fs.Dir = config.working_dir;
 
     var timer = try time.Timer.start();
     var start_sample = timer.read();
+
+    if (cwd.access(target_folder, .{}) != error.FileNotFound) {
+        std.log.err("Failed to validate that the target folder is empty. Ensure it doesn't exist.", .{});
+        return error.TargetFolderFailure;
+    }
 
     var patch_file = cwd.openFile(patch_file_path, .{}) catch |e| {
         switch (e) {
@@ -83,11 +95,11 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
     var apply_patch_stats: ?*OperationStats.ApplyPatchStats = null;
 
     if (stats) |stats_unwrapped| {
-        stats_unwrapped.apply_patch_stats = .{ .num_files = patch.new.files.items.len, .num_directories = patch.new.directories.items.len };
+        stats_unwrapped.apply_patch_stats = .{ .num_files = patch.new.numFiles(), .num_directories = patch.new.numDirectories() };
         apply_patch_stats = &stats_unwrapped.apply_patch_stats.?;
     }
 
-    var validate_source_folder = patch.old.blocks.items.len > 0 or patch.old.directories.items.len > 0 or patch.old.files.items.len > 0;
+    var validate_reference_folder = patch.old.blocks.items.len > 0;
 
     var staging_folder_path_buffer: [1024]u8 = undefined;
 
@@ -107,50 +119,65 @@ pub fn applyPatch(patch_file_path: []const u8, folder_to_patch: []const u8, conf
         }
     }
 
-    var source_folder_with_err = cwd.openDir(folder_to_patch, .{});
-
-    if (source_folder_with_err) |folder_without_err| {
-        source_folder = folder_without_err;
-    } else |err| {
-        switch (err) {
-            error.FileNotFound => {
-                // Not finding the directory will fail further down in case we need the source folder.
-                // If the patch doesn't require a reference this error is okay.
-            },
-            else => {
-                std.log.err("Failed to open source folder, error => {}", .{err});
-                return error.FailedToOpenSourceFolder;
-            },
-        }
+    if (reference_folder == null and validate_reference_folder) {
+        std.log.err("Patch requires a reference folder.", .{});
+        return error.SignatureMismatch;
     }
 
-    if (validate_source_folder) {
-        if (source_folder == null or !@call(.never_inline, SignatureFile.validateFolderMatchesSignature, .{ patch.old, source_folder.? })) {
-            std.log.err("Source folder doesn't match reference that the patch was generated from", .{});
+    if (reference_folder) |ref_folder_unwrapped| {
+        source_folder = cwd.openDir(ref_folder_unwrapped, .{}) catch |e| {
+            switch (e) {
+                else => {
+                    std.log.err("Failed to open reference folder. Error: {s}", .{@errorName(e)});
+                    return error.ReferenceFolderNotFound;
+                },
+            }
+        };
+    }
+
+    if (validate_reference_folder) {
+        if (!@call(.never_inline, SignatureFile.validateFolderMatchesSignature, .{ patch.old, source_folder.? })) {
+            std.log.err("Reference folder doesn't match signature that the patch was generated from", .{});
             return error.SignatureMismatch;
         }
     }
 
-    if (source_folder) |source_folde_unwrapped| {
-        // Copy the folder to patch into our temporary staging folder.
-        try @call(.never_inline, utils.copyFolder, .{ tmp_folder.?, source_folde_unwrapped });
-    }
+    var patch_io = try PatchIO.init(cwd, allocator);
+    defer patch_io.deinit();
 
-    try @call(.never_inline, ApplyPatch.createFileStructure, .{ tmp_folder.?, patch });
+    var patch_files = try @call(.never_inline, ApplyPatch.createFileStructure, .{ &patch_io, tmp_folder.?, patch, allocator });
+    {
+        defer {
+            for (patch_files.items) |file| {
+                patch_io.closeHandle(file);
+            }
 
-    try @call(.never_inline, ApplyPatch.applyPatch, .{ cwd, source_folder, tmp_folder.?, patch_file_path, patch, thread_pool, allocator, config.progress_callback, apply_patch_stats });
+            patch_files.deinit();
+        }
 
-    if (source_folder) |*source_folder_unwrapped| {
-        // If we already have a folder at the source path we back it up.
-
-        source_folder_unwrapped.close();
-        source_folder = null;
-        try cwd.deleteTree(folder_to_patch);
+        try @call(
+            .never_inline,
+            ApplyPatch.applyPatch,
+            .{
+                cwd,
+                source_folder,
+                tmp_folder.?,
+                patch_file_path,
+                patch,
+                thread_pool,
+                allocator,
+                config.progress_callback,
+                &patch_io,
+                patch_file,
+                apply_patch_stats,
+                patch_files,
+            },
+        );
     }
 
     tmp_folder.?.close();
     tmp_folder = null;
-    try cwd.rename(tmp_folder_path, folder_to_patch);
+    try cwd.rename(tmp_folder_path, target_folder);
 
     var end_sample = timer.read();
     std.log.info("Applied Patch in {d:2}ms", .{(@as(f64, @floatFromInt(end_sample)) - @as(f64, @floatFromInt(start_sample))) / 1000000});
@@ -205,7 +232,9 @@ fn findPatchStagingDir(cwd: std.fs.Dir) !std.fs.Dir {
     return error.NoSuitableStagingPathFound;
 }
 
-pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const u8, config: OperationConfig, stats: ?*OperationStats) !void {
+pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const u8, create_patch_config: CreatePatchConfig, stats: ?*OperationStats) !void {
+    var config = create_patch_config.operation_config;
+
     var allocator = config.allocator;
     var thread_pool = config.thread_pool;
     var cwd: std.fs.Dir = config.working_dir;
@@ -228,8 +257,8 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
     }
 
     if (previous_signature == null) {
-        std.log.warn("{s}", .{"No previous signature specified. A full patch will be generated. Specify a previous signature using --previous_signature <path>"});
         prev_signature_file = try SignatureFile.init(allocator);
+        try prev_signature_file.?.initializeToEmptyInMemoryFile();
     } else {
         var out_file = try cwd.openFile(previous_signature.?, .{});
         defer out_file.close();
@@ -265,8 +294,14 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
 
         std.log.info("Generating Signature from {s}...", .{source_folder_path});
 
+        var patch_io = try PatchIO.init(cwd, allocator);
+        defer patch_io.deinit();
+
+        var src_folder_temp_buffer: [1024]u8 = undefined;
+        var abs_src_folder_path = try cwd.realpath(source_folder_path, &src_folder_temp_buffer);
+
         var generate_signature_start_sample = timer.read();
-        try new_signature_file.generateFromFolder(open_dir, thread_pool, config.progress_callback);
+        try new_signature_file.generateFromFolder(abs_src_folder_path, thread_pool, config.progress_callback, &patch_io);
         var generate_signature_finish_sample = timer.read();
 
         std.log.info("Generated Signature in {d:2}ms", .{(@as(f64, @floatFromInt(generate_signature_finish_sample)) - @as(f64, @floatFromInt(generate_signature_start_sample))) / 1000000});
@@ -279,13 +314,19 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
             stats_unwrapped.create_patch_stats = .{};
             create_patch_stats = &stats_unwrapped.create_patch_stats.?;
 
-            for (new_signature_file.files.items) |signature_file_elem| {
-                create_patch_stats.?.total_signature_folder_size_bytes += signature_file_elem.size;
+            for (0..new_signature_file.numFiles()) |file_idx| {
+                var file = new_signature_file.getFile(file_idx);
+                create_patch_stats.?.total_signature_folder_size_bytes += file.size;
             }
         }
 
         var create_patch_start_sample = timer.read();
-        try PatchGeneration.createPatch(thread_pool, new_signature_file, prev_signature_file.?, allocator, .{ .build_dir = open_dir, .staging_dir = staging_dir }, create_patch_stats, config.progress_callback);
+        try PatchGeneration.createPatchV2(&patch_io, thread_pool, new_signature_file, prev_signature_file.?, allocator, .{
+            .build_dir = open_dir,
+            .staging_dir = staging_dir,
+            .compression = create_patch_config.compression,
+        }, create_patch_stats, config.progress_callback);
+
         var create_patch_finish_sample = timer.read();
 
         if (stats) |*operation_stats| {
@@ -294,16 +335,48 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
 
         staging_dir_path = try staging_dir.realpath("", &staging_patch_path_buffer);
 
-        var src_patch_path_buffer: [512]u8 = undefined;
-        var src_patch_path = try std.fmt.bufPrint(&src_patch_path_buffer, "{s}/Patch.pwd", .{staging_dir_path});
+        {
+            var src_patch_path_buffer: [512]u8 = undefined;
+            var src_patch_path = try std.fmt.bufPrint(&src_patch_path_buffer, "{s}/Patch.pwd", .{staging_dir_path});
 
-        var dst_patch_path_buffer: [512]u8 = undefined;
-        var dst_patch_path = try std.fmt.bufPrint(&dst_patch_path_buffer, "{s}/../Patch.pwd", .{staging_dir_path});
+            var dst_patch_path_buffer: [512]u8 = undefined;
+            var dst_patch_path = try std.fmt.bufPrint(&dst_patch_path_buffer, "{s}/../Patch.pwd", .{staging_dir_path});
 
-        try std.os.rename(src_patch_path, dst_patch_path);
+            try std.os.rename(src_patch_path, dst_patch_path);
+        }
+
+        // Write signature file to disk.
+        {
+            var signature_file = try staging_dir.createFile("Patch.signature", .{});
+            defer signature_file.close();
+
+            const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
+            var buffered_file_writer: BufferedFileWriter = .{
+                .unbuffered_writer = signature_file.writer(),
+            };
+
+            var writer = buffered_file_writer.writer();
+
+            try new_signature_file.saveSignature(writer);
+            try buffered_file_writer.flush();
+        }
+
+        // Move signature file into working dir.
+        {
+            var src_signature_path_buffer: [512]u8 = undefined;
+            var src_signature_path = try std.fmt.bufPrint(&src_signature_path_buffer, "{s}/Patch.signature", .{staging_dir_path});
+
+            var dst_signature_path_buffer: [512]u8 = undefined;
+            var dst_signature_path = try std.fmt.bufPrint(&dst_signature_path_buffer, "{s}/../Patch.signature", .{staging_dir_path});
+
+            try std.os.rename(src_signature_path, dst_signature_path);
+        }
     }
 
-    try std.fs.deleteTreeAbsolute(staging_dir_path);
+    std.fs.deleteTreeAbsolute(staging_dir_path) catch |e| {
+        std.log.err("Failed to delete staging dir. Error: {s}", .{@errorName(e)});
+    };
+
     std.log.info("The patch was generated successfully", .{});
 }
 
@@ -320,7 +393,10 @@ pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []con
     var file = try config.working_dir.createFile(output_path, .{});
     defer file.close();
 
-    try signature_file.generateFromFolder(target_dir, config.thread_pool, config.progress_callback);
+    var patch_io = try PatchIO.init(config.working_dir, config.allocator);
+    defer patch_io.deinit();
+
+    try signature_file.generateFromFolder(folder_to_make_signature_of, config.thread_pool, config.progress_callback, &patch_io);
 
     const BufferedFileWriter = std.io.BufferedWriter(1200, std.fs.File.Writer);
     var buffered_file_writer: BufferedFileWriter = .{
@@ -339,13 +415,14 @@ pub fn makeSignature(folder_to_make_signature_of: []const u8, output_path: []con
 
         var total_signature_folder_size_bytes: usize = 0;
 
-        for (signature_file.files.items) |signature_file_elem| {
+        for (0..signature_file.numFiles()) |signature_file_elem_idx| {
+            var signature_file_elem = signature_file.getFile(signature_file_elem_idx);
             total_signature_folder_size_bytes += signature_file_elem.size;
         }
 
         var make_signature_stats: OperationStats.MakeSignatureStats = .{
-            .num_files = signature_file.files.items.len,
-            .num_directories = signature_file.directories.items.len,
+            .num_files = signature_file.numFiles(),
+            .num_directories = signature_file.numDirectories(),
             .total_signature_folder_size_bytes = total_signature_folder_size_bytes,
         };
 

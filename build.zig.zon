@@ -1,5 +1,5 @@
 .{
-    .name = "wharf-zig",
+    .name = "zig-patch",
     .version = "0.1.0",
 
     .dependencies = .{

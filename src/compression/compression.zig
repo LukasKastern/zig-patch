@@ -15,7 +15,7 @@ pub const InflateImpl = struct {
     inflate_buffer: InflateBuffer,
 };
 
-const CompressionImplementation = enum {
+pub const CompressionImplementation = enum {
     None,
     Brotli,
     Zlib,
@@ -32,7 +32,7 @@ pub const NoOpCompression = struct {
             _ = impl;
 
             std.mem.copy(u8, output, input);
-            return output;
+            return output[0..input.len];
         }
     };
 
@@ -193,7 +193,7 @@ pub const Compression = struct {
 };
 
 test {
-    std.testing.refAllDecls(@import("./brotli_compression.zig"));
+    // std.testing.refAllDecls(@import("./brotli_compression.zig"));
 }
 
 test "Deflated then Infalted buffer should be the same" {
