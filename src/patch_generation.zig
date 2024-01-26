@@ -172,6 +172,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         target_file: usize,
         sequence: usize,
         next_sequence: usize,
+        start_sequence: usize,
 
         current_read_buffer: ?usize,
         next_read_buffer: ?usize,
@@ -392,6 +393,10 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
     var has_pending_write = false;
 
+    var file_chunk_sequence: usize = 0;
+
+    const ChunkFileEveryWorkUnits = 5;
+
     generate_patch_loop: while (true) {
         if (next_file_idx < new_signature.numFiles() or active_patch_generation_operations.items.len > 0) {
             while (available_operation_slots.items.len > 0) {
@@ -415,9 +420,10 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
                 operation_slots[slot] = .{
                     .state = task_state,
-                    .next_sequence = 0,
+                    .next_sequence = file_chunk_sequence * ChunkFileEveryWorkUnits,
                     .target_file = next_file_idx,
-                    .sequence = 0,
+                    .sequence = file_chunk_sequence * ChunkFileEveryWorkUnits,
+                    .start_sequence = file_chunk_sequence * ChunkFileEveryWorkUnits,
                     .write_buffer = null,
                     .current_read_buffer = null,
                     .next_read_buffer = null,
@@ -434,9 +440,14 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 operation_slots[slot].generate_operations_state.init(file.size);
 
                 var file_size = new_signature.getFile(next_file_idx).size;
-                patch_file_idx += @as(usize, @intFromFloat(@ceil(@as(f32, @floatFromInt(file_size)) / DefaultMaxWorkUnitSize)));
 
-                next_file_idx += 1;
+                file_chunk_sequence += 1;
+
+                if (file_chunk_sequence * DefaultMaxWorkUnitSize * ChunkFileEveryWorkUnits > file_size) {
+                    patch_file_idx += @as(usize, @intFromFloat(@ceil(@as(f32, @floatFromInt(file_size)) / DefaultMaxWorkUnitSize)));
+                    next_file_idx += 1;
+                    file_chunk_sequence = 0;
+                }
             }
 
             schedule_buffer_reads: for (active_patch_generation_operations.items) |operation_idx| {
@@ -502,8 +513,10 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
                     var write_buffer = active_operation.write_buffer.?;
 
-                    var is_operation_done = next_start_offset >= file_size;
+                    const num_processed_sequences = active_operation.next_sequence - active_operation.start_sequence;
 
+                    var is_operation_done = num_processed_sequences >= ChunkFileEveryWorkUnits or
+                        next_start_offset >= file_size;
                     {
                         var can_write_buffer_fit_another_patch = write_buffer.buffer.len - write_buffer.written_bytes > MaxOperationOutputSize;
 

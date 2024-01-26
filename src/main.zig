@@ -473,3 +473,23 @@ test {
     std.testing.refAllDecls(@import("io/patch_io.zig"));
     std.testing.refAllDecls(@import("e2e_tests.zig"));
 }
+
+fn stackCheckFail() callconv(.C) void {}
+fn stackCheckGuard() callconv(.C) void {}
+
+comptime {
+    if (builtin.os.tag == .windows) {
+        @export(
+            stackCheckFail,
+            .{
+                .name = "__stack_chk_fail",
+            },
+        );
+        @export(
+            stackCheckGuard,
+            .{
+                .name = "__stack_chk_guard",
+            },
+        );
+    }
+}

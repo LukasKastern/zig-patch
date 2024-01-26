@@ -421,10 +421,9 @@ pub fn applyPatch(
                 .Idle => {
                     var section_idx_in_patch = blk: {
                         // Start searching for the next section based on the last idx we had in the patch.
-                        var last_section = operation.last_section_idx_in_patch orelse 0;
-                        for (patch.sections.items[last_section..], 0..) |section, idx| {
+                        for (patch.sections.items, 0..) |section, idx| {
                             if (section.file_idx == operation.file_idx) {
-                                break :blk last_section + idx;
+                                break :blk idx;
                             }
                         }
                         break :blk ~@as(usize, 0);
@@ -559,7 +558,7 @@ pub fn applyPatch(
                                         operation,
                                     );
                                 },
-                                else => unreachable, //TODO:
+                                else => unreachable,
                             }
                         } else {
                             operation.last_section_idx_in_patch.? += 1;
