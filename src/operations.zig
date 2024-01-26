@@ -110,7 +110,7 @@ pub fn applyPatch(patch_file_path: []const u8, reference_folder: ?[]const u8, ta
         }
     }
 
-    var tmp_folder_path = try tmp_folder.?.realpath("", &staging_folder_path_buffer);
+    var tmp_folder_path = try tmp_folder.?.realpath("./", &staging_folder_path_buffer);
 
     var source_folder: ?std.fs.Dir = null;
     defer {
@@ -333,7 +333,7 @@ pub fn createPatch(source_folder_path: []const u8, previous_signature: ?[]const 
             operation_stats.*.total_operation_time = (@as(f64, @floatFromInt(create_patch_finish_sample)) - @as(f64, @floatFromInt(create_patch_start_sample))) / 1000000;
         }
 
-        staging_dir_path = try staging_dir.realpath("", &staging_patch_path_buffer);
+        staging_dir_path = try staging_dir.realpath("./", &staging_patch_path_buffer);
 
         {
             var src_patch_path_buffer: [512]u8 = undefined;

@@ -166,6 +166,34 @@ fn readFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offs
     self.active_operations.appendAssumeCapacity(operation_slot_idx);
 }
 
+fn writeFile(implementation: PatchIO.Implementation, handle: PlatformHandle, offset: usize, buffer: []const u8, callback: *const fn (*anyopaque) void, callback_ctx: *anyopaque) PatchIO.PatchIOErrors!void {
+    var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
+
+    while (self.available_operation_slots.items.len == 0) {
+        self.implementation.tick(implementation);
+    }
+
+    var operation_slot_idx = self.available_operation_slots.swapRemove(self.available_operation_slots.items.len - 1);
+    errdefer self.available_operation_slots.appendAssumeCapacity(operation_slot_idx);
+
+    var operation_slot = &self.operation_slots[operation_slot_idx];
+
+    operation_slot.callback = callback;
+    operation_slot.callback_context = callback_ctx;
+    operation_slot.aio = std.mem.zeroInit(linux.aiocb, .{
+        .aio_fildes = handle,
+        .aio_buf = @as(?*volatile anyopaque, @ptrCast(@constCast(buffer.ptr))),
+        .aio_nbytes = buffer.len,
+        .aio_offset = @as(c_long, @intCast(offset)),
+    });
+
+    if (linux.aio_write(&operation_slot.aio) != 0) {
+        return PatchIO.PatchIOErrors.Unexpected;
+    }
+
+    self.active_operations.appendAssumeCapacity(operation_slot_idx);
+}
+
 fn tick(implementation: PatchIO.Implementation) void {
     var self = @as(*Self, @ptrCast(@alignCast(implementation.instance_data)));
 
@@ -220,6 +248,45 @@ fn unlockDirectory(implementation: PatchIO.Implementation, locked_directory: Pat
     locked_directory.allocator.free(locked_directory.path_buffer);
 }
 
+fn createFile(implementation: PatchIO.Implementation, parent_dir: PlatformHandle, file_path: []const u8) PatchIO.PatchIOErrors!PatchIO.PlatformHandle {
+    _ = implementation; // autofix
+
+    const path_c = std.os.toPosixPath(file_path) catch return PatchIO.PatchIOErrors.FailedToOpenDir;
+    var result = linux.openat(parent_dir, path_c[0..], linux.O.RDWR | linux.O.CREAT, linux.S.IRWXU);
+    switch (linux.getErrno(result)) {
+        .SUCCESS => {
+            return @intCast(result);
+        },
+        else => {
+            return PatchIO.PatchIOErrors.Unexpected;
+        },
+    }
+}
+
+fn createDirectory(implementation: PatchIO.Implementation, parent_dir: PlatformHandle, file_path: []const u8) PatchIO.PatchIOErrors!PatchIO.PlatformHandle {
+    return createFile(implementation, parent_dir, file_path);
+}
+
+fn openFile(implementation: PatchIO.Implementation, parent_dir: PlatformHandle, file_path: []const u8) PatchIO.PatchIOErrors!PatchIO.PlatformHandle {
+    _ = implementation; // autofix
+
+    const path_c = std.os.toPosixPath(file_path) catch return PatchIO.PatchIOErrors.FailedToOpenDir;
+    var result = linux.openat(parent_dir, path_c[0..], linux.O.RDWR, linux.S.IRWXU);
+    switch (linux.getErrno(result)) {
+        .SUCCESS => {
+            return @intCast(result);
+        },
+        else => {
+            return PatchIO.PatchIOErrors.Unexpected;
+        },
+    }
+}
+
+fn closeHandle(implementation: PatchIO.Implementation, handle: PlatformHandle) void {
+    _ = implementation;
+    _ = linux.close(handle);
+}
+
 pub fn create(working_dir: std.fs.Dir, allocator: std.mem.Allocator) PatchIO.PatchIOErrors!PatchIO.Implementation {
     var self = allocator.create(Self) catch return error.OutOfMemory;
 
@@ -241,14 +308,13 @@ pub fn create(working_dir: std.fs.Dir, allocator: std.mem.Allocator) PatchIO.Pat
         .lock_directory = lockDirectory,
         .unlock_directory = unlockDirectory,
         .destroy = destroy,
-        .create_file = undefined,
-        .create_directory = undefined,
-        .open_file = undefined,
+        .create_file = createFile,
+        .create_directory = createDirectory,
+        .open_file = openFile,
         .read_file = readFile,
-        .write_file = undefined,
-        .merge_files = undefined,
+        .write_file = writeFile,
         .tick = tick,
-        .close_handle = undefined,
+        .close_handle = closeHandle,
     };
 
     return self.implementation;

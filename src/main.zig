@@ -395,13 +395,20 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
 
         var folder_size_GiB = @as(f32, @floatFromInt(make_signature_stats.total_signature_folder_size_bytes)) / 1_073_741_824.0;
 
-        stdout.print("\r√ {d:.2}GiB ({} files, {} directories) @ {d:.2}GiB/s            \n", .{ folder_size_GiB, make_signature_stats.num_files, make_signature_stats.num_directories, operation_stats.total_operation_time / std.time.ms_per_s }) catch {};
+        stdout.print(
+            "\r√ {d:.2}GiB ({} files, {} directories) @ {d:.2}GiB/s            \n",
+            .{
+                folder_size_GiB,
+                make_signature_stats.num_files,
+                make_signature_stats.num_directories,
+                folder_size_GiB / (operation_stats.total_operation_time / std.time.ms_per_s),
+            },
+        ) catch {};
     }
 }
 
 pub const std_options = struct {
-    // Set the log level to error
-    pub const log_level = .warn;
+    pub const log_level = .info;
 };
 
 pub fn main() !void {
@@ -425,7 +432,7 @@ pub fn main() !void {
     const command = std.meta.stringToEnum(CommandLineCommand, command_name) orelse show_main_help();
 
     var cores = std.Thread.getCpuCount() catch 4;
-
+    std.log.info("Using cores: {}", .{cores});
     var thread_pool = ThreadPool.init(.{ .max_threads = @intCast(if (cores > 1) cores - 1 else cores) });
 
     switch (command) {
@@ -450,9 +457,9 @@ pub fn main() !void {
         };
 
         thread_pool.schedule(ThreadPool.Batch.from(&shutdown_task_data.task));
-    }
 
-    defer ThreadPool.deinit(&thread_pool);
+        ThreadPool.deinit(&thread_pool);
+    }
 }
 
 test {

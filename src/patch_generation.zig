@@ -549,6 +549,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                                         maybe_write_buffer = write_buffer;
                                         write_buffer.start_sequence = active_operation.next_sequence;
                                         write_buffer.sequence_offsets.clearRetainingCapacity();
+                                        write_buffer.written_bytes = 0;
                                         break;
                                     }
                                 }
@@ -577,7 +578,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                         if (active_operation.write_buffer) |write_buffer| {
                             write_buffer.is_io_pending = true;
                             write_buffer.is_task_done = false;
-                            write_buffer.written_bytes = 0;
 
                             if (write_buffer.start_sequence == 0) {
                                 write_buffer.start_sequence = active_operation.next_sequence;
@@ -592,6 +592,10 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                             active_operation.next_sequence += 1;
 
                             active_operation.has_active_task.store(1, .Release);
+
+                            try active_operation.write_buffer.?.sequence_offsets.ensureTotalCapacity(
+                                active_operation.write_buffer.?.sequence_offsets.items.len + 1,
+                            );
 
                             thread_pool.schedule(ThreadPool.Batch.from(&active_operation.task));
                         }
