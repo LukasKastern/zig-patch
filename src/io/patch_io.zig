@@ -1,7 +1,10 @@
 const std = @import("std");
-const WindowsIO = @import("windows_io.zig");
 
-pub const PlatformHandle = *anyopaque;
+const PlatformIO = if (builtin.os.tag == .windows) @import("windows_io.zig") else @import("linux_io.zig");
+
+const builtin = @import("builtin");
+
+pub const PlatformHandle = if (builtin.os.tag == .windows) *anyopaque else i32;
 
 pub const FileInfo = struct {
     const SelfFile = @This();
@@ -66,7 +69,7 @@ impl: Implementation,
 
 pub fn init(working_dir: std.fs.Dir, allocator: std.mem.Allocator) PatchIOErrors!Self {
     return .{
-        .impl = try WindowsIO.create(working_dir, allocator),
+        .impl = try PlatformIO.create(working_dir, allocator),
     };
 }
 

@@ -65,6 +65,8 @@ pub fn build(b: *std.build.Builder) void {
         zstd_root ++ "/decompress/zstd_ddict.c",
         zstd_root ++ "/decompress/zstd_decompress.c",
         zstd_root ++ "/decompress/zstd_decompress_block.c",
+
+        zstd_root ++ "/decompress/huf_decompress_amd64.S",
     }, &.{});
 
     zstd.addIncludePath(.{ .path = zstd_root });
