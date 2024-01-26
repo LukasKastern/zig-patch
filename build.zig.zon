@@ -1,5 +1,5 @@
 .{
-    .name = "wharf-zig",
+    .name = "zig-patch",
     .version = "0.1.0",
 
     .dependencies = .{
@@ -15,5 +15,10 @@
             .url = "https://github.com/andrewrk/libz/archive/8bf2a1c61b87773131bee2086737b5f02b7c0888.tar.gz",
             .hash = "12209e851f7e2c6ba2f01de3e11b1771f03e49666065320abd8414aac152bfa75fae",
         },
+        .zstd = .{
+            .url = "https://github.com/LukasKastern/zstd/archive/66364bb777d8564b381378d5fb6cef34ee4b3f15.tar.gz",
+            .hash = "1220304b63551a8f09e85ae3d01aa3cf7366ad993358df944af9c94ff72c7664936f",
+        },
+ 
     },
 }

@@ -3,25 +3,35 @@ const SignatureBlock = @import("signature_file.zig").SignatureBlock;
 const Operation = @import("block_patching.zig").PatchOperation;
 const std = @import("std");
 const BlockHash = @import("block.zig").BlockHash;
+const Compression = @import("compression/compression.zig");
 
 pub const FileSection = struct {
     file_idx: usize,
     operations_start_pos_in_file: usize,
+    // start_sequence: usize,
+    // first_block_taken_from_reference: usize,
+    // last_block_taken_from_reference: usize,
 };
 
 pub const PatchHeader = struct {
     old: *SignatureFile,
     new: *SignatureFile,
     sections: std.ArrayList(FileSection),
+    compression: Compression.CompressionImplementation,
     allocator: std.mem.Allocator,
 
-    const SerializationVersion = 1;
+    const SerializationVersion = 2;
     const TypeTag = "Patch";
     const Endian = std.builtin.Endian.Big;
 
     const Self = @This();
 
-    pub fn init(new_signature: *SignatureFile, previous_signature: *SignatureFile, allocator: std.mem.Allocator) !*Self {
+    pub fn init(
+        new_signature: *SignatureFile,
+        previous_signature: *SignatureFile,
+        compression_implementation: Compression.CompressionImplementation,
+        allocator: std.mem.Allocator,
+    ) !*Self {
         var patch_header = try allocator.create(Self);
         errdefer patch_header.deinit();
 
@@ -30,6 +40,8 @@ pub const PatchHeader = struct {
 
         patch_header.new = new_signature;
         patch_header.old = previous_signature;
+
+        patch_header.compression = compression_implementation;
 
         return patch_header;
     }
@@ -43,6 +55,8 @@ pub const PatchHeader = struct {
         try writer.writeInt(usize, TypeTag.len, Endian);
         try writer.writeAll(TypeTag);
         try writer.writeInt(usize, SerializationVersion, Endian);
+
+        try writer.writeInt(usize, @intFromEnum(self.compression), Endian);
 
         try self.old.saveSignature(writer);
         try self.new.saveSignature(writer);
@@ -72,13 +86,14 @@ pub const PatchHeader = struct {
             return error.SerializationVersionMismatch;
         }
 
+        var compression: Compression.CompressionImplementation = @enumFromInt(try reader.readInt(usize, Endian));
         var old_signature = try SignatureFile.loadSignature(reader, allocator);
         errdefer old_signature.deinit();
 
         var new_signature = try SignatureFile.loadSignature(reader, allocator);
         errdefer new_signature.deinit();
 
-        var patch_header = try PatchHeader.init(new_signature, old_signature, allocator);
+        var patch_header = try PatchHeader.init(new_signature, old_signature, compression, allocator);
         errdefer patch_header.deinit();
 
         var num_section = try reader.readInt(usize, Endian);
@@ -101,7 +116,7 @@ test "deserialized patch header should match original header" {
     var new_signature = try SignatureFile.init(std.testing.allocator);
     defer new_signature.deinit();
 
-    var patch_header = try PatchHeader.init(new_signature, old_signature, std.testing.allocator);
+    var patch_header = try PatchHeader.init(new_signature, old_signature, Compression.Compression.Default, std.testing.allocator);
     defer patch_header.deinit();
 
     try patch_header.sections.append(.{ .file_idx = 1, .operations_start_pos_in_file = 25 });
@@ -165,12 +180,12 @@ test "deserialized patch header should match original header" {
     defer deserialized_patch_header.new.deinit();
     defer deserialized_patch_header.old.deinit();
 
-    try std.testing.expectEqual(patch_header.old.directories.items.len, deserialized_patch_header.old.directories.items.len);
-    try std.testing.expectEqual(patch_header.old.files.items.len, deserialized_patch_header.old.files.items.len);
+    try std.testing.expectEqual(patch_header.old.numDirectories(), deserialized_patch_header.old.numDirectories());
+    try std.testing.expectEqual(patch_header.old.numFiles(), deserialized_patch_header.old.numFiles());
     try std.testing.expectEqual(patch_header.old.blocks.items.len, deserialized_patch_header.old.blocks.items.len);
 
-    try std.testing.expectEqual(patch_header.new.directories.items.len, deserialized_patch_header.new.directories.items.len);
-    try std.testing.expectEqual(patch_header.new.files.items.len, deserialized_patch_header.new.files.items.len);
+    try std.testing.expectEqual(patch_header.new.numDirectories(), deserialized_patch_header.new.numDirectories());
+    try std.testing.expectEqual(patch_header.new.numFiles(), deserialized_patch_header.new.numFiles());
     try std.testing.expectEqual(patch_header.new.blocks.items.len, deserialized_patch_header.new.blocks.items.len);
 
     try std.testing.expectEqual(patch_header.sections.items.len, deserialized_patch_header.sections.items.len);

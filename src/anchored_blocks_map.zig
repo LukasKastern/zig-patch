@@ -29,21 +29,23 @@ pub const AnchoredBlocksMap = struct {
 
     const Self = @This();
 
-    pub fn init(signature_file: SignatureFile, allocator: std.mem.Allocator) !*Self {
+    pub fn init(signature_file: *SignatureFile, allocator: std.mem.Allocator) !*Self {
         var self = try allocator.create(AnchoredBlocksMap);
         self.allocator = allocator;
         self.underlying_hash_map = HashMapType.init(allocator);
 
+        var num_files = signature_file.numFiles();
+
         self.all_blocks = try std.ArrayList(AnchoredBlock).initCapacity(allocator, signature_file.blocks.items.len);
-        self.block_start_by_file = try std.ArrayList(usize).initCapacity(allocator, signature_file.files.items.len);
+        self.block_start_by_file = try std.ArrayList(usize).initCapacity(allocator, num_files);
 
         try self.all_blocks.resize(signature_file.blocks.items.len);
-        try self.block_start_by_file.resize(signature_file.files.items.len);
+        try self.block_start_by_file.resize(num_files);
 
         var current_block_start: usize = 0;
 
         for (self.block_start_by_file.items, 0..) |*element, idx| {
-            var file = signature_file.files.items[idx];
+            var file = signature_file.getFile(idx);
             element.* = current_block_start;
 
             var num_blocks_per_file = @as(usize, @intFromFloat(@ceil(@as(f64, @floatFromInt(file.size)) / BlockSize)));
@@ -53,7 +55,9 @@ pub const AnchoredBlocksMap = struct {
         for (signature_file.blocks.items) |block| {
             var start_idx = self.block_start_by_file.items[block.file_idx];
 
-            self.all_blocks.items[start_idx + block.block_idx] = anchoredBlockFromSignatureBlock(signature_file, block);
+            var file_size = signature_file.getFile(block.file_idx).size;
+
+            self.all_blocks.items[start_idx + block.block_idx] = anchoredBlockFromSignatureBlock(file_size, block);
         }
 
         try self.underlying_hash_map.ensureTotalCapacity(@as(u32, @truncate(signature_file.blocks.items.len)));
@@ -120,9 +124,8 @@ pub const AnchoredBlocksMap = struct {
         return self.underlying_hash_map.contains(weak_hash);
     }
 
-    fn anchoredBlockFromSignatureBlock(signature_file: SignatureFile, signature_block: SignatureBlock) AnchoredBlock {
-        var file = signature_file.files.items[signature_block.file_idx];
-        var left_over_bytes = @min(BlockSize, file.size - BlockSize * @as(usize, @intCast(signature_block.block_idx)));
+    fn anchoredBlockFromSignatureBlock(file_size: usize, signature_block: SignatureBlock) AnchoredBlock {
+        var left_over_bytes = @min(BlockSize, file_size - BlockSize * @as(usize, @intCast(signature_block.block_idx)));
 
         return .{
             .file_index = signature_block.file_idx,
@@ -164,21 +167,21 @@ test "Simple signature file should be anchored" {
     var signature_file = try SignatureFile.init(std.testing.allocator);
     defer signature_file.deinit();
 
+    try signature_file.initializeToEmptyInMemoryFile();
+
     var file_name_a = try std.testing.allocator.alloc(u8, "a.data".len);
     std.mem.copy(u8, file_name_a, "a.data");
 
     var file_name_b = try std.testing.allocator.alloc(u8, "b.data".len);
     std.mem.copy(u8, file_name_b, "b.data");
 
-    try signature_file.files.append(.{
+    try signature_file.data.?.InMemorySignatureFile.files.append(.{
         .name = file_name_a,
         .size = BlockSize * 2,
-        .permissions = 0,
     });
-    try signature_file.files.append(.{
+    try signature_file.data.?.InMemorySignatureFile.files.append(.{
         .name = file_name_b,
         .size = BlockSize * 2,
-        .permissions = 0,
     });
 
     var hashes: [4]BlockHash = undefined;
@@ -207,7 +210,7 @@ test "Simple signature file should be anchored" {
 
     try signature_file.blocks.appendSlice(&signature_blocks);
 
-    var anchored_hash_map = try AnchoredBlocksMap.init(signature_file.*, std.testing.allocator);
+    var anchored_hash_map = try AnchoredBlocksMap.init(signature_file, std.testing.allocator);
     defer anchored_hash_map.deinit();
 
     for (hashes) |hash| {
@@ -224,21 +227,21 @@ test "Blocks with same strong hash should be picked based on the preferred file"
     var signature_file = try SignatureFile.init(std.testing.allocator);
     defer signature_file.deinit();
 
+    try signature_file.initializeToEmptyInMemoryFile();
+
     var file_name_a = try std.testing.allocator.alloc(u8, "a.data".len);
     std.mem.copy(u8, file_name_a, "a.data");
 
     var file_name_b = try std.testing.allocator.alloc(u8, "b.data".len);
     std.mem.copy(u8, file_name_b, "b.data");
 
-    try signature_file.files.append(.{
+    try signature_file.data.?.InMemorySignatureFile.files.append(.{
         .name = file_name_a,
         .size = BlockSize * 2,
-        .permissions = 0,
     });
-    try signature_file.files.append(.{
+    try signature_file.data.?.InMemorySignatureFile.files.append(.{
         .name = file_name_b,
         .size = BlockSize * 2,
-        .permissions = 0,
     });
 
     var hashes: [4]BlockHash = undefined;
@@ -262,7 +265,7 @@ test "Blocks with same strong hash should be picked based on the preferred file"
 
     try signature_file.blocks.appendSlice(signature_blocks[0..]);
 
-    var anchored_hash_map = try AnchoredBlocksMap.init(signature_file.*, std.testing.allocator);
+    var anchored_hash_map = try AnchoredBlocksMap.init(signature_file, std.testing.allocator);
     defer anchored_hash_map.deinit();
 
     {

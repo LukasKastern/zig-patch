@@ -1,5 +1,5 @@
 const zstd = @cImport({
-    @cInclude("zstd.h");
+    @cInclude("zstd/zstd.h");
 });
 
 const std = @import("std");

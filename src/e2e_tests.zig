@@ -6,7 +6,9 @@ const AnchoredBlocksMap = @import("anchored_blocks_map.zig").AnchoredBlocksMap;
 const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
 const SignatureBlock = @import("signature_file.zig").SignatureBlock;
 const Block = @import("block.zig");
+const PatchIO = @import("io/patch_io.zig");
 const time = std.time;
+const Compression = @import("compression/compression.zig");
 
 const GenerateFolderOptions = struct {
     min_files: usize = 1,
@@ -106,53 +108,66 @@ fn generateTestFolder(seed: u64, directory: std.fs.Dir, opt: GenerateFolderOptio
     try GenerateImpl.Generate(random, directory, opt);
 }
 
-fn areDirectoriesEqual(lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !bool {
+fn areDirectoriesEqual(cwd: std.fs.Dir, lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *ThreadPool, allocator: std.mem.Allocator) !bool {
     var lhs_signature = try SignatureFile.init(allocator);
     defer lhs_signature.deinit();
 
-    try lhs_signature.generateFromFolder(lhs_dir, thread_pool, null);
+    var patch_io = try PatchIO.init(cwd, allocator);
+    defer patch_io.deinit();
+
+    var lhs_full_path = try lhs_dir.realpathAlloc(allocator, "");
+    defer allocator.free(lhs_full_path);
+
+    try lhs_signature.generateFromFolder(lhs_full_path, thread_pool, null, &patch_io);
 
     var rhs_signature = try SignatureFile.init(allocator);
     defer rhs_signature.deinit();
 
-    try rhs_signature.generateFromFolder(rhs_dir, thread_pool, null);
+    var rhs_full_path = try rhs_dir.realpathAlloc(allocator, "");
+    defer allocator.free(rhs_full_path);
 
-    const lhs_directories = lhs_signature.directories;
-    const rhs_directories = rhs_signature.directories;
+    try rhs_signature.generateFromFolder(rhs_full_path, thread_pool, null, &patch_io);
 
-    if (lhs_directories.items.len != rhs_directories.items.len) {
+    // const lhs_directories = lhs_signature.directories;
+    // const rhs_directories = rhs_signature.directories;
+
+    if (lhs_signature.numDirectories() != rhs_signature.numDirectories()) {
         return false;
     }
 
-    for (lhs_directories.items, 0..) |lhs_directory, idx| {
-        var rhs_directory = rhs_directories.items[idx];
+    var directory_idx: usize = 0;
+    while (directory_idx < lhs_signature.numDirectories()) : (directory_idx += 1) {
+        var lhs_directory = lhs_signature.getDirectory(directory_idx);
+        var rhs_directory = rhs_signature.getDirectory(directory_idx);
 
         if (!std.mem.eql(u8, lhs_directory.path, rhs_directory.path)) {
             return false;
         }
 
-        if (lhs_directory.permissions != rhs_directory.permissions) {
-            return false;
-        }
+        // if (lhs_directory.permissions != rhs_directory.permissions) {
+        // return false;
+        // }
     }
 
-    const lhs_files = lhs_signature.files;
-    const rhs_files = rhs_signature.files;
+    // const lhs_files = lhs_signature.files;
+    // const rhs_files = rhs_signature.files;
 
-    if (lhs_files.items.len != rhs_files.items.len) {
+    if (lhs_signature.numFiles() != rhs_signature.numFiles()) {
         return false;
     }
 
-    for (lhs_files.items, 0..) |lhs_file, idx| {
-        var rhs_file = rhs_files.items[idx];
+    var file_idx: usize = 0;
+    while (file_idx < lhs_signature.numFiles()) : (file_idx += 1) {
+        var lhs_file = lhs_signature.getFile(file_idx);
+        var rhs_file = rhs_signature.getFile(file_idx);
 
         if (!std.mem.eql(u8, lhs_file.name, rhs_file.name)) {
             return false;
         }
 
-        if (lhs_file.permissions != rhs_file.permissions) {
-            return false;
-        }
+        // if (lhs_file.permissions != rhs_file.permissions) {
+        // return false;
+        // }
 
         if (lhs_file.size != rhs_file.size) {
             std.log.info("File {s} expected size of {} but is {}\n", .{ lhs_file.name, lhs_file.size, rhs_file.size });
@@ -167,7 +182,7 @@ fn areDirectoriesEqual(lhs_dir: std.fs.Dir, rhs_dir: std.fs.Dir, thread_pool: *T
         return false;
     }
 
-    var rhs_anchored_blockmap = try AnchoredBlocksMap.init(rhs_signature.*, allocator);
+    var rhs_anchored_blockmap = try AnchoredBlocksMap.init(rhs_signature, allocator);
     defer rhs_anchored_blockmap.deinit();
 
     for (lhs_blocks.items) |lhs_block| {
@@ -213,24 +228,25 @@ test "Full patch should match source folder" {
         try generateTestFolder(12587, src_folder, .{});
     }
 
-    // Create the target folder
-    {
-        try cwd.makeDir(target_folder_path);
-        var target_folder = try cwd.openDir(target_folder_path, .{});
-        defer target_folder.close();
+    var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    defer {
+        thread_pool.shutdown();
+        thread_pool.deinit();
     }
 
-    var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
     thread_pool.spawnThreads();
 
-    var operation_config: operations.OperationConfig = .{
-        .working_dir = test_root_dir,
-        .thread_pool = &thread_pool,
-        .allocator = std.testing.allocator,
+    var operation_config: operations.CreatePatchConfig = .{
+        .operation_config = .{
+            .working_dir = test_root_dir,
+            .thread_pool = &thread_pool,
+            .allocator = std.testing.allocator,
+        },
+        .compression = Compression.Compression.Default,
     };
 
     try operations.createPatch("Original", null, operation_config, null);
-    try operations.applyPatch("Patch.pwd", "Patched", operation_config, null);
+    try operations.applyPatch("Patch.pwd", null, "Patched", operation_config.operation_config, null);
 
     {
         var src_folder = try cwd.openDir(src_folder_path, .{});
@@ -239,7 +255,7 @@ test "Full patch should match source folder" {
         var target_folder = try cwd.openDir(target_folder_path, .{});
         defer target_folder.close();
 
-        try std.testing.expect(try areDirectoriesEqual(src_folder, target_folder, &thread_pool, std.testing.allocator));
+        try std.testing.expect(try areDirectoriesEqual(cwd, src_folder, target_folder, &thread_pool, std.testing.allocator));
     }
 }
 
@@ -273,6 +289,9 @@ test "Patch should delete/create files and folders" {
     var original_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
     defer std.testing.allocator.free(original_folder_path);
 
+    var patched_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Patched" });
+    defer std.testing.allocator.free(patched_folder_path);
+
     var modified_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Modified" });
     defer std.testing.allocator.free(modified_folder_path);
 
@@ -295,6 +314,11 @@ test "Patch should delete/create files and folders" {
     }
 
     var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    defer {
+        thread_pool.shutdown();
+        thread_pool.deinit();
+    }
+
     thread_pool.spawnThreads();
 
     var operation_config: operations.OperationConfig = .{
@@ -467,30 +491,38 @@ test "Patch should delete/create files and folders" {
     }
 
     var pre_create_patch = timer.read();
-    try operations.createPatch("Modified", "OriginalSignature", operation_config, null);
+    try operations.createPatch(
+        "Modified",
+        "OriginalSignature",
+        .{
+            .compression = Compression.Compression.Default,
+            .operation_config = operation_config,
+        },
+        null,
+    );
     var create_patch_sample = timer.read();
     std.log.info("Creating patch took {d:2}ms", .{(@as(f64, @floatFromInt(create_patch_sample)) - @as(f64, @floatFromInt(pre_create_patch))) / 1000000});
 
     try operation_config.working_dir.rename("Patch.pwd", "PatchToModified.pwd");
-    try operations.applyPatch("PatchToModified.pwd", "Original", operation_config, null);
+    try operations.applyPatch("PatchToModified.pwd", "Original", "Patched", operation_config, null);
 
     var end_sample = timer.read();
     std.log.info("Did test in {d:2}ms", .{(@as(f64, @floatFromInt(end_sample)) - @as(f64, @floatFromInt(start_sample))) / 1000000});
 
     {
-        var src_folder = try cwd.openDir(original_folder_path, .{});
+        var src_folder = try cwd.openDir(modified_folder_path, .{});
         defer src_folder.close();
 
-        var target_folder = try cwd.openDir(modified_folder_path, .{});
+        var target_folder = try cwd.openDir(patched_folder_path, .{});
         defer target_folder.close();
 
-        try std.testing.expect(try areDirectoriesEqual(src_folder, target_folder, &thread_pool, std.testing.allocator));
+        try std.testing.expect(try areDirectoriesEqual(cwd, src_folder, target_folder, &thread_pool, std.testing.allocator));
     }
 }
 
 test "Modifying one block should result in one data operation being generated" {
     const cwd = std.fs.cwd();
-    const TestRootPath = "temp/ModifyBlock";
+    const TestRootPath = "temp/ModifyBlock/";
     cwd.makeDir("temp") catch |err| {
         switch (err) {
             error.PathAlreadyExists => {},
@@ -505,7 +537,7 @@ test "Modifying one block should result in one data operation being generated" {
     var test_root_dir = try cwd.openDir(TestRootPath, .{});
     defer test_root_dir.close();
 
-    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original/" });
     defer std.testing.allocator.free(src_folder_path);
 
     var block_data = try std.testing.allocator.alloc(u8, Block.BlockSize * 32);
@@ -529,6 +561,11 @@ test "Modifying one block should result in one data operation being generated" {
     }
 
     var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    defer {
+        thread_pool.shutdown();
+        thread_pool.deinit();
+    }
+
     thread_pool.spawnThreads();
 
     var operation_config: operations.OperationConfig = .{
@@ -537,7 +574,7 @@ test "Modifying one block should result in one data operation being generated" {
         .allocator = std.testing.allocator,
     };
 
-    try operations.makeSignature("Original", "OriginalSignature", operation_config, null);
+    try operations.makeSignature("Original/", "OriginalSignature/", operation_config, null);
     var stats: operations.OperationStats = .{};
 
     // Modify one block of the "LargeFile".
@@ -556,7 +593,10 @@ test "Modifying one block should result in one data operation being generated" {
         try large_file.writeAll(&modified_block);
     }
 
-    try operations.createPatch("Original", "OriginalSignature", operation_config, &stats);
+    try operations.createPatch("Original/", "OriginalSignature/", .{
+        .operation_config = operation_config,
+        .compression = Compression.Compression.Default,
+    }, &stats);
 
     try std.testing.expect(stats.create_patch_stats.?.total_blocks > 0);
     try std.testing.expectEqual(@as(usize, 1), stats.create_patch_stats.?.changed_blocks);
@@ -579,7 +619,7 @@ test "Changing file size should result in one data operation being generated" {
     var test_root_dir = try cwd.openDir(TestRootPath, .{});
     defer test_root_dir.close();
 
-    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original/" });
     defer std.testing.allocator.free(src_folder_path);
 
     var block_data = try std.testing.allocator.alloc(u8, Block.BlockSize * 256);
@@ -596,13 +636,17 @@ test "Changing file size should result in one data operation being generated" {
     {
         try generateTestFolder(12587, src_folder, .{});
 
-        var large_file = try src_folder.createFile("LargeFile", .{});
+        var large_file = try src_folder.createFile("./LargeFile", .{});
         defer large_file.close();
 
         try large_file.writeAll(block_data);
     }
 
     var thread_pool = ThreadPool.init(.{ .max_threads = 16 });
+    defer {
+        thread_pool.shutdown();
+        thread_pool.deinit();
+    }
     thread_pool.spawnThreads();
 
     var operation_config: operations.OperationConfig = .{
@@ -611,7 +655,7 @@ test "Changing file size should result in one data operation being generated" {
         .allocator = std.testing.allocator,
     };
 
-    try operations.makeSignature("Original", "OriginalSignature", operation_config, null);
+    try operations.makeSignature("Original/", "OriginalSignature/", operation_config, null);
 
     {
         var modified_large_file = try src_folder.createFile("LargeFileModified", .{});
@@ -622,7 +666,10 @@ test "Changing file size should result in one data operation being generated" {
 
     var stats: operations.OperationStats = .{};
 
-    try operations.createPatch("Original", "OriginalSignature", operation_config, &stats);
+    try operations.createPatch("/Original", "/OriginalSignature", .{
+        .operation_config = operation_config,
+        .compression = Compression.Compression.Default,
+    }, &stats);
 
     try std.testing.expect(stats.create_patch_stats.?.total_blocks > 0);
     try std.testing.expectEqual(@as(usize, 1), stats.create_patch_stats.?.changed_blocks);
