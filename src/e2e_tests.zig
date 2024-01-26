@@ -522,7 +522,7 @@ test "Patch should delete/create files and folders" {
 
 test "Modifying one block should result in one data operation being generated" {
     const cwd = std.fs.cwd();
-    const TestRootPath = "temp/ModifyBlock";
+    const TestRootPath = "temp/ModifyBlock/";
     cwd.makeDir("temp") catch |err| {
         switch (err) {
             error.PathAlreadyExists => {},
@@ -537,7 +537,7 @@ test "Modifying one block should result in one data operation being generated" {
     var test_root_dir = try cwd.openDir(TestRootPath, .{});
     defer test_root_dir.close();
 
-    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original/" });
     defer std.testing.allocator.free(src_folder_path);
 
     var block_data = try std.testing.allocator.alloc(u8, Block.BlockSize * 32);
@@ -574,7 +574,7 @@ test "Modifying one block should result in one data operation being generated" {
         .allocator = std.testing.allocator,
     };
 
-    try operations.makeSignature("Original", "OriginalSignature", operation_config, null);
+    try operations.makeSignature("Original/", "OriginalSignature/", operation_config, null);
     var stats: operations.OperationStats = .{};
 
     // Modify one block of the "LargeFile".
@@ -593,7 +593,7 @@ test "Modifying one block should result in one data operation being generated" {
         try large_file.writeAll(&modified_block);
     }
 
-    try operations.createPatch("Original", "OriginalSignature", .{
+    try operations.createPatch("Original/", "OriginalSignature/", .{
         .operation_config = operation_config,
         .compression = Compression.Compression.Default,
     }, &stats);
@@ -619,7 +619,7 @@ test "Changing file size should result in one data operation being generated" {
     var test_root_dir = try cwd.openDir(TestRootPath, .{});
     defer test_root_dir.close();
 
-    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original" });
+    var src_folder_path = try std.fs.path.join(std.testing.allocator, &[_][]const u8{ TestRootPath, "Original/" });
     defer std.testing.allocator.free(src_folder_path);
 
     var block_data = try std.testing.allocator.alloc(u8, Block.BlockSize * 256);
@@ -636,7 +636,7 @@ test "Changing file size should result in one data operation being generated" {
     {
         try generateTestFolder(12587, src_folder, .{});
 
-        var large_file = try src_folder.createFile("LargeFile", .{});
+        var large_file = try src_folder.createFile("./LargeFile", .{});
         defer large_file.close();
 
         try large_file.writeAll(block_data);
@@ -655,7 +655,7 @@ test "Changing file size should result in one data operation being generated" {
         .allocator = std.testing.allocator,
     };
 
-    try operations.makeSignature("Original", "OriginalSignature", operation_config, null);
+    try operations.makeSignature("Original/", "OriginalSignature/", operation_config, null);
 
     {
         var modified_large_file = try src_folder.createFile("LargeFileModified", .{});
@@ -666,7 +666,7 @@ test "Changing file size should result in one data operation being generated" {
 
     var stats: operations.OperationStats = .{};
 
-    try operations.createPatch("Original", "OriginalSignature", .{
+    try operations.createPatch("/Original", "/OriginalSignature", .{
         .operation_config = operation_config,
         .compression = Compression.Compression.Default,
     }, &stats);
