@@ -16,6 +16,7 @@ const OperationStats = operations.OperationStats;
 const builtin = @import("builtin");
 const PatchIO = @import("io/patch_io.zig");
 const Compression = @import("compression/compression.zig");
+const ProgressCallback = @import("operations.zig").ProgressCallback;
 
 const clap = @import("clap");
 
@@ -138,42 +139,161 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
 
         state: CreatePatchState = .None,
         source_folder: []const u8,
+        columns_written: usize = 0,
 
-        fn onMakeSignatureProgress(print_helper_opaque: *anyopaque, progress: f32, progress_str: ?[]const u8) void {
+        fn clearPreviousLines(self: *Self) void {
+            const stdout = std.io.getStdErr().writer();
+
+            if (false) {
+                stdout.print("\x1b[{d}D", .{self.columns_written}) catch unreachable;
+                stdout.print("\x1b[0K", .{}) catch unreachable;
+            } else {
+                var info: std.os.windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+                if (std.os.windows.kernel32.GetConsoleScreenBufferInfo(std.io.getStdErr().handle, &info) != std.os.windows.TRUE) {
+                    // stop trying to write to this file
+                    return;
+                }
+
+                var cursor_pos = std.os.windows.COORD{ .X = 0, .Y = info.dwCursorPosition.Y - @as(i16, @intCast(self.columns_written)) };
+
+                const fill_chars = @as(std.os.windows.DWORD, @intCast(info.dwSize.X - cursor_pos.X));
+                _ = fill_chars;
+                const cell_count = info.dwSize.X * info.dwSize.Y;
+                var written: std.os.windows.DWORD = undefined;
+
+                if (std.os.windows.kernel32.FillConsoleOutputCharacterW(
+                    std.io.getStdErr().handle,
+                    ' ',
+                    @intCast(cell_count),
+                    cursor_pos,
+                    &written,
+                ) != std.os.windows.TRUE) {
+                    // stop trying to write to this file
+
+                    return;
+                }
+
+                if (std.os.windows.kernel32.FillConsoleOutputAttribute(
+                    std.io.getStdErr().handle,
+                    info.wAttributes,
+                    @intCast(cell_count),
+                    cursor_pos,
+                    &written,
+                ) != std.os.windows.TRUE) {
+                    // stop trying to write to this file
+
+                    return;
+                }
+                if (std.os.windows.kernel32.SetConsoleCursorPosition(std.io.getStdErr().handle, cursor_pos) != std.os.windows.TRUE) {
+                    // stop trying to write to this file
+                    return;
+                }
+            }
+        }
+
+        fn drawCreatePatchProgress(self: *Self, create_patch_data: *const ProgressCallback.CallbackData.CreatePatchData) void {
+            self.clearPreviousLines();
+            self.columns_written = 0;
+
+            const stdout = std.io.getStdErr().writer();
+            var buffer = std.mem.zeroes([4096]u8);
+
+            var offset: usize = 0;
+            offset += (std.fmt.bufPrint(
+                buffer[offset..],
+                "[{}/{}] Patching...\n",
+                .{
+                    create_patch_data.finished_operations,
+                    create_patch_data.total_operations,
+                },
+            ) catch unreachable).len;
+            self.columns_written += 1;
+
+            for (create_patch_data.operations.items) |operation| {
+                const num_progress_chars = 20;
+                var progress_buffer: [num_progress_chars * 4]u8 = undefined;
+                var progress_buffer_offset: usize = 0;
+                for (0..num_progress_chars) |idx| {
+                    const percentage_represented_by_idx = @as(f32, @floatFromInt(num_progress_chars)) / @as(f32, @floatFromInt(idx));
+
+                    var progress_char = blk: {
+                        if (percentage_represented_by_idx >= operation.progress) {
+                            break :blk "█";
+                        } else {
+                            break :blk "▁";
+                        }
+                    };
+
+                    std.mem.copy(
+                        u8,
+                        progress_buffer[progress_buffer_offset .. progress_buffer_offset + progress_char.len],
+                        progress_char,
+                    );
+
+                    progress_buffer_offset += progress_char.len;
+                }
+
+                if (operation.chunk_idx == 0) {
+                    offset += (std.fmt.bufPrint(
+                        buffer[offset..],
+                        "{s} | {s}\n",
+                        .{ progress_buffer[0..progress_buffer_offset], operation.file.name },
+                    ) catch unreachable).len;
+                } else {
+                    offset += (std.fmt.bufPrint(
+                        buffer[offset..],
+                        "{s} | {s} ({})\n",
+                        .{
+                            progress_buffer[0..progress_buffer_offset],
+                            operation.file.name,
+                            operation.chunk_idx,
+                        },
+                    ) catch unreachable).len;
+                }
+
+                self.columns_written += 1;
+            }
+
+            _ = stdout.write(&buffer) catch {};
+        }
+
+        fn onMakeSignatureProgress(print_helper_opaque: *anyopaque, callback_data: *ProgressCallback.CallbackData) void {
             const stdout = std.io.getStdErr().writer();
 
             var print_helper = @as(*Self, @ptrCast(@alignCast(print_helper_opaque)));
 
             const progress_str_to_state = [_][]const u8{ "", "Hashing Blocks", "Generating Patches", "Assembling Patch" };
 
-            if (progress_str) |progress_str_value| {
-                var new_state: CreatePatchState = .None;
+            switch (callback_data.*) {
+                .creating_patch => |creating_patch| {
+                    print_helper.drawCreatePatchProgress(&creating_patch);
+                },
+                .default => |default| {
+                    if (default.type) |progress_str_value| {
+                        var new_state: CreatePatchState = .None;
 
-                inline for (progress_str_to_state, 0..) |state_progress_str, idx| {
-                    if (std.mem.eql(u8, state_progress_str, progress_str_value)) {
-                        new_state = @as(CreatePatchState, @enumFromInt(idx));
+                        inline for (progress_str_to_state, 0..) |state_progress_str, idx| {
+                            if (std.mem.eql(u8, state_progress_str, progress_str_value)) {
+                                new_state = @as(CreatePatchState, @enumFromInt(idx));
+                            }
+                        }
+
+                        if (print_helper.state != new_state) {
+                            print_helper.state = new_state;
+
+                            switch (new_state) {
+                                else => {},
+                                .HashingSource => {
+                                    print_helper.columns_written = 1;
+                                    stdout.print("\r∙ Hashing                   \n", .{}) catch {};
+                                },
+                            }
+                        }
                     }
-                }
 
-                if (print_helper.state != new_state) {
-                    print_helper.state = new_state;
-
-                    switch (new_state) {
-                        .None => {},
-                        .HashingSource => {
-                            stdout.print("\r∙ Hashing                   \n", .{}) catch {};
-                        },
-                        .GeneratingPatch => {
-                            stdout.print("\r∙ Calculating Patch         \n", .{}) catch {};
-                        },
-                        .AssemblingPatch => {
-                            stdout.print("\r∙ Assembling Patch          \n", .{}) catch {};
-                        },
-                    }
-                }
+                    stdout.print("\r{d:.2}%             ", .{default.progress}) catch {};
+                },
             }
-
-            stdout.print("\r{d:.2}%             ", .{progress}) catch {};
         }
     };
 
@@ -190,12 +310,17 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
                 .working_dir = std.fs.cwd(),
                 .thread_pool = thread_pool,
                 .allocator = allocator,
-                .progress_callback = .{ .user_object = &print_helper, .callback = CreatePatchPrintHelper.onMakeSignatureProgress },
+                .progress_callback = .{
+                    .user_object = &print_helper,
+                    .callback = CreatePatchPrintHelper.onMakeSignatureProgress,
+                },
             },
         },
 
         &stats,
     );
+
+    print_helper.clearPreviousLines();
 
     var create_patch_stats = stats.create_patch_stats.?;
 
@@ -214,6 +339,8 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
 
         var total_patch_size_MiB = @as(f32, @floatFromInt(create_patch_stats.total_patch_size_bytes)) / bytes_to_MiB;
         var percentage_of_full_size = @as(f32, @floatFromInt(create_patch_stats.total_patch_size_bytes)) / @as(f32, @floatFromInt(create_patch_stats.total_signature_folder_size_bytes));
+
+        stdout.print("New bytes: {} Signature folder size: {}\n", .{ create_patch_stats.num_new_bytes, create_patch_stats.total_signature_folder_size_bytes }) catch {};
 
         stdout.print("\r√ Re-used {d:.2}% of old, added {d:.2} MiB fresh data\n", .{ reused_percentage * 100, new_data_size_MiB }) catch {};
 
@@ -275,11 +402,10 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
     const MakeSignaturePrintHelper = struct {
         const Self = @This();
 
-        fn onMakeSignatureProgress(user_object: *anyopaque, progress: f32, progress_str: ?[]const u8) void {
+        fn onMakeSignatureProgress(user_object: *anyopaque, progress_data: *ProgressCallback.CallbackData) void {
             const stdout = std.io.getStdErr().writer();
-            stdout.print("\r{d:.2}%             ", .{progress}) catch {};
+            stdout.print("\r{d:.2}%             ", .{progress_data.default.progress}) catch {};
 
-            _ = progress_str;
             _ = user_object;
         }
     };
@@ -293,7 +419,7 @@ fn apply(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocato
         .working_dir = std.fs.cwd(),
         .thread_pool = thread_pool,
         .allocator = allocator,
-        .progress_callback = .{ .user_object = &print_helper, .callback = MakeSignaturePrintHelper.onMakeSignatureProgress }
+        .progress_callback = .{ .user_object = &print_helper, .callback = MakeSignaturePrintHelper.onMakeSignatureProgress, }
     }, &stats);
     // zig fmt: on
 
@@ -361,11 +487,10 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
     const MakeSignaturePrintHelper = struct {
         const Self = @This();
 
-        fn onMakeSignatureProgress(user_object: *anyopaque, progress: f32, progress_str: ?[]const u8) void {
+        fn onMakeSignatureProgress(user_object: *anyopaque, progress_data: *ProgressCallback.CallbackData) void {
             const stdout = std.io.getStdErr().writer();
-            stdout.print("\r{d:.2}%             ", .{progress}) catch {};
+            stdout.print("\r{d:.2}%             ", .{progress_data.default.progress}) catch {};
 
-            _ = progress_str;
             _ = user_object;
         }
     };
@@ -408,7 +533,74 @@ fn make_signature(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem
 }
 
 pub const std_options = struct {
-    pub const log_level = .info;
+    pub const log_level = .warn;
+};
+
+const ProgressUI = struct {
+    columns_written: usize = 0,
+    fn draw(self: *@This()) void {
+        const stdout = std.io.getStdErr().writer();
+
+        if (false) {
+            stdout.print("\x1b[{d}D", .{self.columns_written}) catch unreachable;
+            stdout.print("\x1b[0K", .{}) catch unreachable;
+        } else {
+            var info: std.os.windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+            if (std.os.windows.kernel32.GetConsoleScreenBufferInfo(std.io.getStdErr().handle, &info) != std.os.windows.TRUE) {
+                // stop trying to write to this file
+                return;
+            }
+
+            var cursor_pos = std.os.windows.COORD{ .X = 0, .Y = info.dwCursorPosition.Y - @as(i16, @intCast(self.columns_written)) };
+
+            const fill_chars = @as(std.os.windows.DWORD, @intCast(info.dwSize.X - cursor_pos.X));
+            _ = fill_chars;
+            const cell_count = info.dwSize.X * info.dwSize.Y;
+            var written: std.os.windows.DWORD = undefined;
+
+            if (std.os.windows.kernel32.FillConsoleOutputCharacterW(
+                std.io.getStdErr().handle,
+                ' ',
+                @intCast(cell_count),
+                cursor_pos,
+                &written,
+            ) != std.os.windows.TRUE) {
+                // stop trying to write to this file
+
+                return;
+            }
+
+            if (std.os.windows.kernel32.FillConsoleOutputAttribute(
+                std.io.getStdErr().handle,
+                info.wAttributes,
+                @intCast(cell_count),
+                cursor_pos,
+                &written,
+            ) != std.os.windows.TRUE) {
+                // stop trying to write to this file
+
+                return;
+            }
+            if (std.os.windows.kernel32.SetConsoleCursorPosition(std.io.getStdErr().handle, cursor_pos) != std.os.windows.TRUE) {
+                // stop trying to write to this file
+                return;
+            }
+        }
+        var buffer = std.mem.zeroes([4096]u8);
+
+        var offset: usize = 0;
+        offset += (std.fmt.bufPrint(buffer[offset..], "[1/245] 50.5%\n", .{}) catch unreachable).len;
+
+        for (0..16) |a| {
+            _ = a;
+
+            offset += (std.fmt.bufPrint(buffer[offset..], "██████▁▁▁▁▁  | src/main.zig\n", .{}) catch unreachable).len;
+        }
+
+        _ = stdout.write(&buffer) catch {};
+
+        self.columns_written = 17;
+    }
 };
 
 pub fn main() !void {
@@ -416,6 +608,12 @@ pub fn main() !void {
     if (builtin.os.tag == .windows) {
         _ = std.os.windows.kernel32.SetConsoleOutputCP(65001);
     }
+
+    // var progress_ui = ProgressUI{};
+    // while (true) {
+    //     progress_ui.draw();
+    //     std.time.sleep(std.time.ns_per_ms * 10);
+    // }
 
     var gpa = std.heap.GeneralPurposeAllocator(.{ .verbose_log = false }){};
     defer _ = gpa.deinit();
@@ -478,7 +676,7 @@ fn stackCheckFail() callconv(.C) void {}
 fn stackCheckGuard() callconv(.C) void {}
 
 comptime {
-    if (builtin.os.tag == .windows) {
+    if (builtin.os.tag == .windows and builtin.mode != .ReleaseSafe) {
         @export(
             stackCheckFail,
             .{

@@ -10,8 +10,34 @@ const PatchIO = @import("io/patch_io.zig");
 const CompressionImplementation = @import("compression/compression.zig").CompressionImplementation;
 
 pub const ProgressCallback = struct {
+    pub const Type = enum {
+        creating_patch,
+        default,
+    };
+
+    pub const CallbackData = union(Type) {
+        pub const CreatePatchData = struct {
+            pub const OperationData = struct {
+                file_idx: usize,
+                chunk_idx: usize,
+                progress: f32,
+                file: SignatureFile.File,
+            };
+
+            operations: std.ArrayList(OperationData),
+            finished_operations: usize,
+            total_operations: usize,
+        };
+
+        creating_patch: CreatePatchData,
+        default: struct {
+            progress: f32,
+            type: ?[]const u8,
+        },
+    };
+
     user_object: *anyopaque,
-    callback: *const fn (*anyopaque, f32, ?[]const u8) void,
+    callback: *const fn (*anyopaque, *CallbackData) void,
 };
 
 pub const OperationStats = struct {
