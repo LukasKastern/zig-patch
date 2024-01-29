@@ -157,6 +157,40 @@ pub fn generateOperationsForBuffer(block_map: AnchoredBlocksMap, state: *Generat
     var current_block_backing_buffer: [BlockSize]u8 = undefined;
     var current_block: []u8 = undefined;
 
+    if (block_map.all_blocks.items.len == 0) {
+        const in_buffer_end_in_file = state.previous_step_start + state.previous_step_data_tail.len + state.in_buffer.len;
+
+        while (state.tail < state.file_size) {
+            const batch_len = @min(max_operation_len, in_buffer_end_in_file - state.tail);
+
+            if (batch_len == 0) {
+                try state.prepareForNextIteration(&patch_operations, allocator);
+                return patch_operations;
+            }
+
+            var file_slice = blk: {
+                var empty_slice: [0]u8 = undefined;
+
+                // First try to get the file slice as a reference.
+                // If that is not possible we allocate the required memory.
+                var slice = state.getFileSlice(state.owed_data_tail, &empty_slice, batch_len) catch err_blk: {
+                    var new_data_op = try allocator.alloc(u8, batch_len);
+                    break :err_blk state.getFileSlice(state.owed_data_tail, new_data_op, batch_len) catch unreachable;
+                };
+
+                break :blk slice;
+            };
+
+            try patch_operations.append(.{ .Data = file_slice });
+
+            state.tail += batch_len;
+            state.head += batch_len;
+            state.owed_data_tail += batch_len;
+        }
+
+        return patch_operations;
+    }
+
     while (state.tail < state.file_size) {
         if (state.jump_to_next_block) {
             var new_head = @min(state.head + BlockSize, state.file_size);

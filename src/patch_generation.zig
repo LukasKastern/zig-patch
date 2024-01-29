@@ -119,14 +119,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         pub fn generatePatchTask(task: *ThreadPool.Task) void {
             var self = @fieldParentPtr(Self, "task", task);
 
-            var file = self.state.signature.getFile(self.target_file);
-            var current_start_offset = self.sequence * DefaultMaxWorkUnitSize;
-            var file_size = file.size;
-
-            var remaining_len = file_size - current_start_offset;
-            var is_last_sequence = remaining_len <= DefaultMaxWorkUnitSize;
-            _ = is_last_sequence;
-
             var data_buffer = &self.state.read_buffers[self.current_read_buffer.?];
             self.generate_operations_state.in_buffer = data_buffer.data[0..self.num_bytes_to_process];
 
