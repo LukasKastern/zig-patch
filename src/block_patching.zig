@@ -72,13 +72,15 @@ pub const GenerateOperationsState = struct {
         const in_buffer_end_in_file = in_buffer_start_in_file + state.in_buffer.len;
 
         var num_bytes_left_in_buffer: usize = 0;
-        if (state.head > in_buffer_end_in_file) {
-            const exceeding_by_num_bytes = state.head - in_buffer_end_in_file;
-            num_bytes_left_in_buffer = BlockSize - exceeding_by_num_bytes;
+        if (state.tail < in_buffer_end_in_file) {
+            const exceeding_by_num_bytes = in_buffer_end_in_file - state.tail;
+            num_bytes_left_in_buffer = exceeding_by_num_bytes;
         }
 
         // Adjust the start position by the bytes we processed.
         state.previous_step_start += state.in_buffer.len - num_bytes_left_in_buffer + state.previous_step_data_tail.len;
+
+        std.debug.assert(state.previous_step_start <= state.tail);
 
         state.previous_step_data_tail = state.previous_step_data_tail_backing_buffer[0..num_bytes_left_in_buffer];
 
@@ -127,7 +129,7 @@ pub const GenerateOperationsState = struct {
 
             const in_buffer_copy_start = if (bytes_from_prev > 0) 0 else start - in_buffer_start_in_file;
 
-            const actual_copied_bytes_from_prev = @as(usize, @intCast(@max(bytes_from_prev, 0)));
+            const actual_copied_bytes_from_prev = @min(desired_size, @as(usize, @intCast(@max(bytes_from_prev, 0))));
             const bytes_to_copy = desired_size - actual_copied_bytes_from_prev;
 
             if (in_buffer_copy_start + bytes_to_copy > state.in_buffer.len) {
