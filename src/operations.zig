@@ -22,6 +22,13 @@ pub const ProgressCallback = struct {
                 chunk_idx: usize,
                 progress: f32,
                 file: SignatureFile.File,
+                state: OperationState,
+            };
+
+            pub const OperationState = enum {
+                reading,
+                processing,
+                waiting,
             };
 
             operations: std.ArrayList(OperationData),

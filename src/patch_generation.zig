@@ -406,7 +406,8 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     var current_start_offset = active_operation.next_sequence * DefaultMaxWorkUnitSize;
                     var file_size = new_signature.getFile(active_operation.target_file).size;
 
-                    if (current_start_offset >= file_size) {
+                    const num_processed_sequences = active_operation.next_sequence - active_operation.start_sequence;
+                    if (current_start_offset >= file_size or num_processed_sequences >= ChunkFileEveryWorkUnits) {
                         // We already reached the end of the file.
                         // Meaning it doesn't need another buffer.
                         continue;
@@ -433,7 +434,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
                     read_buffer.read_start_time = std.time.nanoTimestamp();
 
-                    std.log.debug("Reading buffer for file: {}", .{active_operation.target_file});
+                    std.log.debug("Reading buffer for file: {}, chunk: {}", .{ active_operation.target_file, active_operation.start_sequence / ChunkFileEveryWorkUnits });
                     var file_handle = new_signature.data.?.OnDiskSignatureFile.locked_directory.files.items[active_operation.target_file].handle;
                     try patch_io.readFile(file_handle, current_start_offset, read_buffer.data[0..num_bytes_to_read], IOCallbackWrapper.ioCallback, read_buffer);
                 }
@@ -484,6 +485,8 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                         active_operation.stats = .{};
                         std.debug.assert(active_operation.generate_operations_state.tail ==
                             active_operation.generate_operations_state.file_size);
+
+                        std.debug.assert(active_operation.next_read_buffer == null);
 
                         std.log.debug(
                             "Operation for file: {} completed in {}ms",
@@ -590,13 +593,47 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                             total_num_sequences_in_file,
                         );
 
+                        var state = blk: {
+                            const StateNamespace = ProgressCallback.CallbackData.CreatePatchData.OperationState;
+                            var has_task = active_operation.has_active_task.load(.Acquire) != 0;
+                            if (has_task) {
+                                break :blk StateNamespace.processing;
+                            } else {
+                                if (active_operation.next_read_buffer) |read_buffer_idx| {
+                                    var read_buffer = task_state.read_buffers[read_buffer_idx];
+
+                                    if (!read_buffer.is_ready) {
+                                        break :blk StateNamespace.reading;
+                                    }
+                                }
+
+                                break :blk StateNamespace.waiting;
+                            }
+                        };
+
+                        var progress = 1 - (@as(f32, @floatFromInt(last_sequence)) - @as(f32, @floatFromInt(active_operation.sequence))) / ChunkFileEveryWorkUnits;
+
                         progress_operation_data_array.appendAssumeCapacity(.{
                             .file_idx = active_operation.target_file,
                             .chunk_idx = @divTrunc(active_operation.start_sequence, ChunkFileEveryWorkUnits),
-                            .progress = @as(f32, @floatFromInt(last_sequence)) / @as(f32, @floatFromInt(active_operation.sequence)),
+                            .progress = progress,
                             .file = file,
+                            .state = state,
                         });
                     }
+
+                    var pending_writes = blk: {
+                        var writes: usize = 0;
+                        for (write_buffers.items) |buffer| {
+                            if (buffer.is_task_done and buffer.is_io_pending) {
+                                writes += 1;
+                            }
+                        }
+
+                        break :blk writes;
+                    };
+
+                    std.log.debug("Pending writes: {}. Available Reads: {}. Num active ops: {}", .{ pending_writes, available_read_buffers.items.len, progress_operation_data_array.items.len });
 
                     var progress_data = ProgressCallback.CallbackData{
                         .creating_patch = .{
@@ -645,7 +682,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     buffer.is_io_pending = false;
 
                     buffer.has_pending_write.* = false;
-
+                    std.log.debug("Wrote buffer of {}bytes in {}ms", .{ buffer.written_bytes, @divTrunc(std.time.nanoTimestamp() - buffer.write_start_time, std.time.ns_per_ms) });
                     buffer.written_bytes = ~@as(usize, 0);
                 }
             };

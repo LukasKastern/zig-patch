@@ -214,10 +214,10 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
                 var progress_buffer: [num_progress_chars * 4]u8 = undefined;
                 var progress_buffer_offset: usize = 0;
                 for (0..num_progress_chars) |idx| {
-                    const percentage_represented_by_idx = @as(f32, @floatFromInt(num_progress_chars)) / @as(f32, @floatFromInt(idx));
+                    const percentage_represented_by_idx = @as(f32, @floatFromInt(idx)) / @as(f32, @floatFromInt(num_progress_chars));
 
                     var progress_char = blk: {
-                        if (percentage_represented_by_idx >= operation.progress) {
+                        if (percentage_represented_by_idx < operation.progress) {
                             break :blk "█";
                         } else {
                             break :blk "▁";
@@ -233,20 +233,31 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
                     progress_buffer_offset += progress_char.len;
                 }
 
+                var state_str = switch (operation.state) {
+                    .processing => "p",
+                    .waiting => "w",
+                    .reading => "r",
+                };
+
                 if (operation.chunk_idx == 0) {
                     offset += (std.fmt.bufPrint(
                         buffer[offset..],
-                        "{s} | {s}\n",
-                        .{ progress_buffer[0..progress_buffer_offset], operation.file.name },
+                        "{s} | {s} ({s})\n",
+                        .{
+                            progress_buffer[0..progress_buffer_offset],
+                            operation.file.name,
+                            state_str,
+                        },
                     ) catch unreachable).len;
                 } else {
                     offset += (std.fmt.bufPrint(
                         buffer[offset..],
-                        "{s} | {s} ({})\n",
+                        "{s} | {s} ({}) ({s})\n",
                         .{
                             progress_buffer[0..progress_buffer_offset],
                             operation.file.name,
                             operation.chunk_idx,
+                            state_str,
                         },
                     ) catch unreachable).len;
                 }
