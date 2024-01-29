@@ -157,6 +157,8 @@ pub fn generateOperationsForBuffer(block_map: AnchoredBlocksMap, state: *Generat
     var current_block_backing_buffer: [BlockSize]u8 = undefined;
     var current_block: []u8 = undefined;
 
+    // If we do not have a reference we can use this "faster path".
+    // This will skip computing the hashes for the blocks inside the input data.
     if (block_map.all_blocks.items.len == 0) {
         const in_buffer_end_in_file = state.previous_step_start + state.previous_step_data_tail.len + state.in_buffer.len;
 
