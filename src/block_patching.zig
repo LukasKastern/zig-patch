@@ -66,15 +66,25 @@ pub const GenerateOperationsState = struct {
             state.owed_data_tail = state.tail;
         }
 
-        // Put the remaining data into the state buffer.
-        const num_remaining_bytes = state.head - state.tail;
+        std.debug.assert(state.previous_step_start < state.tail);
+
+        const in_buffer_start_in_file = state.previous_step_start + state.previous_step_data_tail.len;
+        const in_buffer_end_in_file = in_buffer_start_in_file + state.in_buffer.len;
+
+        var num_bytes_left_in_buffer: usize = 0;
+        if (state.tail < in_buffer_end_in_file) {
+            const exceeding_by_num_bytes = in_buffer_end_in_file - state.tail;
+            num_bytes_left_in_buffer = exceeding_by_num_bytes;
+        }
 
         // Adjust the start position by the bytes we processed.
-        state.previous_step_start += state.in_buffer.len - num_remaining_bytes;
+        state.previous_step_start += state.in_buffer.len - num_bytes_left_in_buffer + state.previous_step_data_tail.len;
 
-        state.previous_step_data_tail = state.previous_step_data_tail_backing_buffer[0..num_remaining_bytes];
+        std.debug.assert(state.previous_step_start <= state.tail);
 
-        const slice_from_in_buffer = state.in_buffer[state.in_buffer.len - num_remaining_bytes ..];
+        state.previous_step_data_tail = state.previous_step_data_tail_backing_buffer[0..num_bytes_left_in_buffer];
+
+        const slice_from_in_buffer = state.in_buffer[state.in_buffer.len - num_bytes_left_in_buffer ..];
 
         std.mem.copy(u8, state.previous_step_data_tail, slice_from_in_buffer);
         state.in_buffer = &[_]u8{};
@@ -119,7 +129,7 @@ pub const GenerateOperationsState = struct {
 
             const in_buffer_copy_start = if (bytes_from_prev > 0) 0 else start - in_buffer_start_in_file;
 
-            const actual_copied_bytes_from_prev = @as(usize, @intCast(@max(bytes_from_prev, 0)));
+            const actual_copied_bytes_from_prev = @min(desired_size, @as(usize, @intCast(@max(bytes_from_prev, 0))));
             const bytes_to_copy = desired_size - actual_copied_bytes_from_prev;
 
             if (in_buffer_copy_start + bytes_to_copy > state.in_buffer.len) {
@@ -146,6 +156,42 @@ pub fn generateOperationsForBuffer(block_map: AnchoredBlocksMap, state: *Generat
 
     var current_block_backing_buffer: [BlockSize]u8 = undefined;
     var current_block: []u8 = undefined;
+
+    // If we do not have a reference we can use this "faster path".
+    // This will skip computing the hashes for the blocks inside the input data.
+    if (block_map.all_blocks.items.len == 0) {
+        const in_buffer_end_in_file = state.previous_step_start + state.previous_step_data_tail.len + state.in_buffer.len;
+
+        while (state.tail < state.file_size) {
+            const batch_len = @min(max_operation_len, in_buffer_end_in_file - state.tail);
+
+            if (batch_len == 0) {
+                try state.prepareForNextIteration(&patch_operations, allocator);
+                return patch_operations;
+            }
+
+            var file_slice = blk: {
+                var empty_slice: [0]u8 = undefined;
+
+                // First try to get the file slice as a reference.
+                // If that is not possible we allocate the required memory.
+                var slice = state.getFileSlice(state.owed_data_tail, &empty_slice, batch_len) catch err_blk: {
+                    var new_data_op = try allocator.alloc(u8, batch_len);
+                    break :err_blk state.getFileSlice(state.owed_data_tail, new_data_op, batch_len) catch unreachable;
+                };
+
+                break :blk slice;
+            };
+
+            try patch_operations.append(.{ .Data = file_slice });
+
+            state.tail += batch_len;
+            state.head += batch_len;
+            state.owed_data_tail += batch_len;
+        }
+
+        return patch_operations;
+    }
 
     while (state.tail < state.file_size) {
         if (state.jump_to_next_block) {
@@ -246,9 +292,9 @@ pub fn generateOperationsForBuffer(block_map: AnchoredBlocksMap, state: *Generat
             state.tail = state.head;
             state.jump_to_next_block = true;
         } else {
-            const reached_end_of_buffer = state.tail == state.head;
+            // const reached_end_of_buffer = state.tail == state.head;
             const can_omit_data_op = state.owed_data_tail != state.tail;
-            const needs_to_omit_data_op = reached_end_of_buffer or (state.tail - state.owed_data_tail >= max_operation_len);
+            const needs_to_omit_data_op = (state.tail - state.owed_data_tail >= max_operation_len);
 
             if (can_omit_data_op and needs_to_omit_data_op) {
                 //TODO: Remove the duplicates of this code.

@@ -361,7 +361,14 @@ pub const SignatureFile = struct {
                 if (elapsed_time > 100 * std.time.ns_per_ms) {
                     time_since_last_progress_callback = now;
                     var elapsed_progress = (@as(f32, @floatFromInt(self.blocks.items.len)) / @as(f32, @floatFromInt(num_blocks))) * 100;
-                    progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, elapsed_progress, "Hashing Blocks");
+
+                    var progress_data = .{
+                        .default = .{
+                            .progress = elapsed_progress,
+                            .type = "Hashing Blocks",
+                        },
+                    };
+                    progress_callback_unwrapped.callback(progress_callback_unwrapped.user_object, &progress_data);
                 }
             }
         }

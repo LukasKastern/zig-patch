@@ -208,8 +208,6 @@ const ApplyPatchOperation = struct {
 
     current_section: usize,
 
-    last_section_idx_in_patch: ?usize,
-
     read_buffer: []u8,
     is_read_buffer_rdy: bool,
 
@@ -330,7 +328,7 @@ pub fn applyPatch(
     defer available_operation_slots.deinit();
 
     const DefaultMaxWorkUnitSize = BlockSize * 128;
-    const MaxOperationOverhead = 1024;
+    const MaxOperationOverhead = BlockSize + 2048;
     const MaxOperationOutputSize = DefaultMaxWorkUnitSize + MaxOperationOverhead;
 
     var per_thread_inflation_buffer = try allocator.alloc([]u8, thread_pool.max_threads);
@@ -399,7 +397,6 @@ pub fn applyPatch(
             operation.current_section = 0;
             operation.is_read_buffer_rdy = false;
             operation.state = .Idle;
-            operation.last_section_idx_in_patch = null;
             operation.patch_file_offset = 0;
             operation.active_patch_operation = null;
 
@@ -422,7 +419,7 @@ pub fn applyPatch(
                     var section_idx_in_patch = blk: {
                         // Start searching for the next section based on the last idx we had in the patch.
                         for (patch.sections.items, 0..) |section, idx| {
-                            if (section.file_idx == operation.file_idx) {
+                            if (section.file_idx == operation.file_idx and section.sequence_idx == operation.current_section) {
                                 break :blk idx;
                             }
                         }
@@ -436,8 +433,6 @@ pub fn applyPatch(
                         running_operation_idx -= 1;
                         continue;
                     }
-
-                    operation.last_section_idx_in_patch = section_idx_in_patch;
 
                     var offset = patch.sections.items[section_idx_in_patch].operations_start_pos_in_file;
 
@@ -561,7 +556,7 @@ pub fn applyPatch(
                                 else => unreachable,
                             }
                         } else {
-                            operation.last_section_idx_in_patch.? += 1;
+                            operation.current_section += 1;
                             operation.state = .Idle;
                         }
                     }
