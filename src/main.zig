@@ -545,84 +545,11 @@ pub const std_options = struct {
     pub const log_level = .warn;
 };
 
-const ProgressUI = struct {
-    columns_written: usize = 0,
-    fn draw(self: *@This()) void {
-        const stdout = std.io.getStdErr().writer();
-
-        if (false) {
-            stdout.print("\x1b[{d}D", .{self.columns_written}) catch unreachable;
-            stdout.print("\x1b[0K", .{}) catch unreachable;
-        } else {
-            var info: std.os.windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-            if (std.os.windows.kernel32.GetConsoleScreenBufferInfo(std.io.getStdErr().handle, &info) != std.os.windows.TRUE) {
-                // stop trying to write to this file
-                return;
-            }
-
-            var cursor_pos = std.os.windows.COORD{ .X = 0, .Y = info.dwCursorPosition.Y - @as(i16, @intCast(self.columns_written)) };
-
-            const fill_chars = @as(std.os.windows.DWORD, @intCast(info.dwSize.X - cursor_pos.X));
-            _ = fill_chars;
-            const cell_count = info.dwSize.X * info.dwSize.Y;
-            var written: std.os.windows.DWORD = undefined;
-
-            if (std.os.windows.kernel32.FillConsoleOutputCharacterW(
-                std.io.getStdErr().handle,
-                ' ',
-                @intCast(cell_count),
-                cursor_pos,
-                &written,
-            ) != std.os.windows.TRUE) {
-                // stop trying to write to this file
-
-                return;
-            }
-
-            if (std.os.windows.kernel32.FillConsoleOutputAttribute(
-                std.io.getStdErr().handle,
-                info.wAttributes,
-                @intCast(cell_count),
-                cursor_pos,
-                &written,
-            ) != std.os.windows.TRUE) {
-                // stop trying to write to this file
-
-                return;
-            }
-            if (std.os.windows.kernel32.SetConsoleCursorPosition(std.io.getStdErr().handle, cursor_pos) != std.os.windows.TRUE) {
-                // stop trying to write to this file
-                return;
-            }
-        }
-        var buffer = std.mem.zeroes([4096]u8);
-
-        var offset: usize = 0;
-        offset += (std.fmt.bufPrint(buffer[offset..], "[1/245] 50.5%\n", .{}) catch unreachable).len;
-
-        for (0..16) |a| {
-            _ = a;
-
-            offset += (std.fmt.bufPrint(buffer[offset..], "██████▁▁▁▁▁  | src/main.zig\n", .{}) catch unreachable).len;
-        }
-
-        _ = stdout.write(&buffer) catch {};
-
-        self.columns_written = 17;
-    }
-};
-
 pub fn main() !void {
     // Enable utf-8 console output
     if (builtin.os.tag == .windows) {
         _ = std.os.windows.kernel32.SetConsoleOutputCP(65001);
     }
-
-    // var progress_ui = ProgressUI{};
-    // while (true) {
-    //     progress_ui.draw();
-    //     std.time.sleep(std.time.ns_per_ms * 10);
-    // }
 
     var gpa = std.heap.GeneralPurposeAllocator(.{ .verbose_log = false }){};
     defer _ = gpa.deinit();
