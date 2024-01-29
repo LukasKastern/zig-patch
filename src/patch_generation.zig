@@ -111,6 +111,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             total_blocks: usize = 0,
             changed_blocks: usize = 0,
             num_new_bytes: usize = 0,
+            num_bytes_read: usize = 0,
         },
 
         const Self = @This();
@@ -137,9 +138,16 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 &self.generate_operations_state,
                 temp_allocator.allocator(),
                 MaxDataOperationLength,
-            ) catch unreachable;
+            ) catch |e| {
+                switch (e) {
+                    else => {
+                        std.log.err("Generate operations failed. Error: {s}", .{@errorName(e)});
+                        unreachable;
+                    },
+                }
+            };
 
-            var operations_buffer = temp_allocator.allocator().alloc(u8, DefaultMaxWorkUnitSize + 2048) catch unreachable;
+            var operations_buffer = temp_allocator.allocator().alloc(u8, DefaultMaxWorkUnitSize + BlockSize + 2048) catch unreachable;
             var fixed_buffer_stream = std.io.fixedBufferStream(operations_buffer);
 
             // Update Stats
@@ -162,6 +170,8 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     }
                 }
             }
+
+            // std.debug.assert(self.stats.num_new_bytes <= self.num_bytes_to_process + prev_step_bytes);
 
             // Write operations to the temp buffer.
             {
@@ -346,6 +356,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                 }
 
                 var file = new_signature.getFile(next_file_idx);
+                _ = file;
 
                 var slot = available_operation_slots.orderedRemove(available_operation_slots.items.len - 1);
                 active_patch_generation_operations.appendAssumeCapacity(slot);
@@ -369,9 +380,11 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     .start_time = std.time.nanoTimestamp(),
                     .compression = options.compression,
                 };
-                operation_slots[slot].generate_operations_state.init(file.size);
 
+                const desired_num_bytes_to_process = ChunkFileEveryWorkUnits * DefaultMaxWorkUnitSize;
                 var file_size = new_signature.getFile(next_file_idx).size;
+                const generate_operations_size = @min(file_size - desired_num_bytes_to_process * file_chunk_sequence, desired_num_bytes_to_process);
+                operation_slots[slot].generate_operations_state.init(generate_operations_size);
 
                 file_chunk_sequence += 1;
 
@@ -450,7 +463,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     const num_processed_sequences = active_operation.next_sequence - active_operation.start_sequence;
 
                     var is_operation_done = num_processed_sequences >= ChunkFileEveryWorkUnits or
-                        next_start_offset >= file_size;
+                        next_start_offset > file_size;
                     {
                         var can_write_buffer_fit_another_patch = write_buffer.buffer.len - write_buffer.written_bytes > MaxOperationOutputSize;
 
@@ -467,7 +480,10 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                             stats_unwrapped.num_new_bytes += active_operation.stats.num_new_bytes;
                             stats_unwrapped.changed_blocks += active_operation.stats.changed_blocks;
                         }
+
                         active_operation.stats = .{};
+                        std.debug.assert(active_operation.generate_operations_state.tail ==
+                            active_operation.generate_operations_state.file_size);
 
                         std.log.debug(
                             "Operation for file: {} completed in {}ms",
@@ -512,7 +528,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                                         .has_pending_write = undefined,
                                         .write_start_time = undefined,
                                         .file_idx = 0,
-                                        .start_sequence = 0,
+                                        .start_sequence = active_operation.next_sequence,
                                         .sequence_offsets = try std.ArrayList(usize).initCapacity(allocator, 32),
                                     };
                                     try write_buffers.append(maybe_write_buffer.?);
@@ -525,10 +541,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                         if (active_operation.write_buffer) |write_buffer| {
                             write_buffer.is_io_pending = true;
                             write_buffer.is_task_done = false;
-
-                            if (write_buffer.start_sequence == 0) {
-                                write_buffer.start_sequence = active_operation.next_sequence;
-                            }
 
                             write_buffer.file_idx = active_operation.target_file;
 
@@ -548,6 +560,8 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
                             var num_bytes_to_read = @min(DefaultMaxWorkUnitSize, file_size - current_start_offset);
                             active_operation.num_bytes_to_process = num_bytes_to_read;
+
+                            active_operation.stats.num_bytes_read += num_bytes_to_read;
 
                             thread_pool.schedule(ThreadPool.Batch.from(&active_operation.task));
                         }
@@ -609,15 +623,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                         continue;
                     }
 
-                    if (buffer_to_write) |unwrapped_buffer| {
-                        // Buffers that point towards the same file need to be written in order.
-                        // This is required by the way the patch is applied.
-                        if (unwrapped_buffer.file_idx == write_buffer.file_idx and unwrapped_buffer.start_sequence > write_buffer.start_sequence) {
-                            buffer_to_write = write_buffer;
-                        }
-                    } else {
-                        buffer_to_write = write_buffer;
-                    }
+                    buffer_to_write = write_buffer;
                 }
 
                 break :blk buffer_to_write;
@@ -652,12 +658,12 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
             var prev_offset = patch_file_offset;
             patch_file_offset += write_buffer.written_bytes;
 
-            for (write_buffer.sequence_offsets.items) |sequence_offset| {
-                // std.log.info("Section: {}", .{patch_header.sections.items.len});
+            for (write_buffer.sequence_offsets.items, 0..) |sequence_offset, idx| {
                 patch_header.sections.appendAssumeCapacity(
                     .{
                         .operations_start_pos_in_file = prev_offset + sequence_offset, // This needs to be taken from the write buffer offset
                         .file_idx = write_buffer.file_idx,
+                        .sequence_idx = write_buffer.start_sequence + idx,
                     },
                 );
             }

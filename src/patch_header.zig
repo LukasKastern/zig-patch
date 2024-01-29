@@ -8,6 +8,7 @@ const Compression = @import("compression/compression.zig");
 pub const FileSection = struct {
     file_idx: usize,
     operations_start_pos_in_file: usize,
+    sequence_idx: usize,
     // start_sequence: usize,
     // first_block_taken_from_reference: usize,
     // last_block_taken_from_reference: usize,
@@ -20,7 +21,7 @@ pub const PatchHeader = struct {
     compression: Compression.CompressionImplementation,
     allocator: std.mem.Allocator,
 
-    const SerializationVersion = 2;
+    const SerializationVersion = 3;
     const TypeTag = "Patch";
     const Endian = std.builtin.Endian.Big;
 
@@ -66,6 +67,7 @@ pub const PatchHeader = struct {
         for (self.sections.items) |section| {
             try writer.writeInt(usize, section.file_idx, Endian);
             try writer.writeInt(usize, section.operations_start_pos_in_file, Endian);
+            try writer.writeInt(usize, section.sequence_idx, Endian);
         }
     }
 
@@ -103,6 +105,7 @@ pub const PatchHeader = struct {
         for (patch_header.sections.items) |*section| {
             section.file_idx = try reader.readInt(usize, Endian);
             section.operations_start_pos_in_file = try reader.readInt(usize, Endian);
+            section.sequence_idx = try reader.readInt(usize, Endian);
         }
 
         return patch_header;

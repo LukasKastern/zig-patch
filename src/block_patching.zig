@@ -66,15 +66,23 @@ pub const GenerateOperationsState = struct {
             state.owed_data_tail = state.tail;
         }
 
-        // Put the remaining data into the state buffer.
-        const num_remaining_bytes = state.head - state.tail;
+        std.debug.assert(state.previous_step_start < state.tail);
+
+        const in_buffer_start_in_file = state.previous_step_start + state.previous_step_data_tail.len;
+        const in_buffer_end_in_file = in_buffer_start_in_file + state.in_buffer.len;
+
+        var num_bytes_left_in_buffer: usize = 0;
+        if (state.head > in_buffer_end_in_file) {
+            const exceeding_by_num_bytes = state.head - in_buffer_end_in_file;
+            num_bytes_left_in_buffer = BlockSize - exceeding_by_num_bytes;
+        }
 
         // Adjust the start position by the bytes we processed.
-        state.previous_step_start += state.in_buffer.len - num_remaining_bytes;
+        state.previous_step_start += state.in_buffer.len - num_bytes_left_in_buffer + state.previous_step_data_tail.len;
 
-        state.previous_step_data_tail = state.previous_step_data_tail_backing_buffer[0..num_remaining_bytes];
+        state.previous_step_data_tail = state.previous_step_data_tail_backing_buffer[0..num_bytes_left_in_buffer];
 
-        const slice_from_in_buffer = state.in_buffer[state.in_buffer.len - num_remaining_bytes ..];
+        const slice_from_in_buffer = state.in_buffer[state.in_buffer.len - num_bytes_left_in_buffer ..];
 
         std.mem.copy(u8, state.previous_step_data_tail, slice_from_in_buffer);
         state.in_buffer = &[_]u8{};
@@ -246,9 +254,9 @@ pub fn generateOperationsForBuffer(block_map: AnchoredBlocksMap, state: *Generat
             state.tail = state.head;
             state.jump_to_next_block = true;
         } else {
-            const reached_end_of_buffer = state.tail == state.head;
+            // const reached_end_of_buffer = state.tail == state.head;
             const can_omit_data_op = state.owed_data_tail != state.tail;
-            const needs_to_omit_data_op = reached_end_of_buffer or (state.tail - state.owed_data_tail >= max_operation_len);
+            const needs_to_omit_data_op = (state.tail - state.owed_data_tail >= max_operation_len);
 
             if (can_omit_data_op and needs_to_omit_data_op) {
                 //TODO: Remove the duplicates of this code.

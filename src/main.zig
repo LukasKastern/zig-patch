@@ -340,8 +340,6 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         var total_patch_size_MiB = @as(f32, @floatFromInt(create_patch_stats.total_patch_size_bytes)) / bytes_to_MiB;
         var percentage_of_full_size = @as(f32, @floatFromInt(create_patch_stats.total_patch_size_bytes)) / @as(f32, @floatFromInt(create_patch_stats.total_signature_folder_size_bytes));
 
-        stdout.print("New bytes: {} Signature folder size: {}\n", .{ create_patch_stats.num_new_bytes, create_patch_stats.total_signature_folder_size_bytes }) catch {};
-
         stdout.print("\r√ Re-used {d:.2}% of old, added {d:.2} MiB fresh data\n", .{ reused_percentage * 100, new_data_size_MiB }) catch {};
 
         stdout.print("√ {d:.2} MiB patch ({d:.2}% of the full size) in {d:.2}s\n", .{ total_patch_size_MiB, percentage_of_full_size * 100, stats.total_operation_time / std.time.ms_per_s }) catch {};
