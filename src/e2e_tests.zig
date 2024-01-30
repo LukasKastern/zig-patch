@@ -666,7 +666,7 @@ test "Changing file size should result in one data operation being generated" {
 
     var stats: operations.OperationStats = .{};
 
-    try operations.createPatch("/Original", "/OriginalSignature", .{
+    try operations.createPatch("Original/", "OriginalSignature/", .{
         .operation_config = operation_config,
         .compression = Compression.Compression.Default,
     }, &stats);

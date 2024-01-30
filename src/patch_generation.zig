@@ -485,7 +485,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     const num_processed_sequences = active_operation.next_sequence - active_operation.start_sequence;
 
                     var is_operation_done = num_processed_sequences >= ChunkFileEveryWorkUnits or
-                        next_start_offset > file_size;
+                        next_start_offset >= file_size;
                     {
                         var can_write_buffer_fit_another_patch = write_buffer.buffer.len - write_buffer.written_bytes > MaxOperationOutputSize;
 

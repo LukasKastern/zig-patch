@@ -9,9 +9,6 @@ pub const FileSection = struct {
     file_idx: usize,
     operations_start_pos_in_file: usize,
     sequence_idx: usize,
-    // start_sequence: usize,
-    // first_block_taken_from_reference: usize,
-    // last_block_taken_from_reference: usize,
 };
 
 pub const PatchHeader = struct {
@@ -122,11 +119,11 @@ test "deserialized patch header should match original header" {
     var patch_header = try PatchHeader.init(new_signature, old_signature, Compression.Compression.Default, std.testing.allocator);
     defer patch_header.deinit();
 
-    try patch_header.sections.append(.{ .file_idx = 1, .operations_start_pos_in_file = 25 });
-    try patch_header.sections.append(.{ .file_idx = 2, .operations_start_pos_in_file = 26 });
-    try patch_header.sections.append(.{ .file_idx = 3, .operations_start_pos_in_file = 27 });
-    try patch_header.sections.append(.{ .file_idx = 4, .operations_start_pos_in_file = 28 });
-    try patch_header.sections.append(.{ .file_idx = 5, .operations_start_pos_in_file = 29 });
+    try patch_header.sections.append(.{ .file_idx = 1, .operations_start_pos_in_file = 25, .sequence_idx = 0 });
+    try patch_header.sections.append(.{ .file_idx = 2, .operations_start_pos_in_file = 26, .sequence_idx = 2 });
+    try patch_header.sections.append(.{ .file_idx = 3, .operations_start_pos_in_file = 27, .sequence_idx = 23 });
+    try patch_header.sections.append(.{ .file_idx = 4, .operations_start_pos_in_file = 28, .sequence_idx = 2133 });
+    try patch_header.sections.append(.{ .file_idx = 5, .operations_start_pos_in_file = 29, .sequence_idx = 231321 });
 
     var hashes: [6]BlockHash = undefined;
     hashes[0] = .{
