@@ -1,22 +1,18 @@
 # What is zig-patch?
 
-zig-patch is a command line for incrementally updating software.
+zig-patch is a highly concurrent command line tool for incrementally updating software.
 
-It implements a modified version of the [wharf spec](https://itch.io/docs/wharf/).   
-
-
-
-<!-- ## Benchmarks TODO -->
+Its core algorithms are based on the [wharf spec](https://itch.io/docs/wharf/).  
 
 ## Prequisites
-First download the required [Zig (0.11)](https://ziglang.org/download/).
+[Zig (0.11)](https://ziglang.org/download/).
 
 ## Build the project
 
 ```
 git clone https://github.com/LukasKastern/zig-patch.git
 cd zig-patch
-zig build
+zig build -Doptimize=ReleaseFast
 ```
 
 ## Usage
