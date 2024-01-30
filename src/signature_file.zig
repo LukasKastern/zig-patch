@@ -6,6 +6,7 @@ const RollingHash = @import("rolling_hash.zig").RollingHash;
 const ThreadPool = @import("zap/thread_pool_go_based.zig");
 const WeakHashType = @import("block.zig").WeakHashType;
 const ProgressCallback = @import("operations.zig").ProgressCallback;
+const MD5 = @import("md5.zig");
 
 const PatchIO = @import("io/patch_io.zig");
 
@@ -170,7 +171,7 @@ pub const SignatureFile = struct {
 
                 self.out_hashes[processed_blocks].weak_hash = rolling_hash.hash;
 
-                std.crypto.hash.Md5.hash(block_data, &self.out_hashes[processed_blocks].strong_hash, .{});
+                MD5.hash(block_data, &self.out_hashes[processed_blocks].strong_hash);
 
                 // If this was the last block break out of the batch.
                 if (remaining_bytes <= BlockSize) {
@@ -199,7 +200,7 @@ pub const SignatureFile = struct {
         var num_blocks: usize = 0;
         var num_total_read_batches: usize = 0;
 
-        const read_buffer_size = BlockSize * CalculateHashData.BlocksPerBatchOfWork * 8;
+        const read_buffer_size = BlockSize * CalculateHashData.BlocksPerBatchOfWork * 16;
 
         for (locked_folder.files.items) |signature_file| {
             if (signature_file.size == 0) {

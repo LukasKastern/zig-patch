@@ -46,6 +46,18 @@ pub fn build(b: *std.build.Builder) void {
     exe.linkLibrary(zlib_dep.artifact("z"));
     // exe.addIncludePath(.{ .path = zstd_root });
 
+    const md5_lib = b.addStaticLibrary(.{
+        .name = "md5",
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    md5_lib.addIncludePath(.{ .path = "./src/md5" });
+    md5_lib.addCSourceFiles(&.{"src/md5/md5.cpp"}, &.{ "-fno-rtti", "-fno-exceptions" });
+    md5_lib.linkLibCpp();
+
+    exe.linkLibrary(md5_lib);
+    exe.addIncludePath(.{ .path = "./src/md5/" });
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {

@@ -6,6 +6,7 @@ const BlockSize = @import("block.zig").BlockSize;
 const RollingHash = @import("rolling_hash.zig").RollingHash;
 const AnchoredBlock = @import("anchored_blocks_map.zig").AnchoredBlock;
 const BlockHash = @import("block.zig").BlockHash;
+const MD5 = @import("md5.zig");
 
 pub const MaxDataOperationLength = 1024 * 1024 * 4;
 
@@ -250,7 +251,7 @@ pub fn generateOperationsForBuffer(block_map: AnchoredBlocksMap, state: *Generat
                 .strong_hash = undefined,
             };
 
-            std.crypto.hash.Md5.hash(current_block, &block_hash.strong_hash, .{});
+            MD5.hash(current_block, &block_hash.strong_hash);
 
             var block_size = state.head - state.tail;
             var short_size = BlockSize - block_size;
