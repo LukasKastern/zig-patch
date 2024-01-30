@@ -11,7 +11,10 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardOptimizeOption(.{});
 
-    var clap = b.dependency("zig_clap", .{}).module("clap");
+    var clap = b.dependency("zig_clap", .{
+        .target = target,
+        .optimize = mode,
+    }).module("clap");
 
     var zlib_dep = b.dependency("zlib", .{
         .target = target,
@@ -29,7 +32,10 @@ pub fn build(b: *std.build.Builder) void {
 
     const exe = b.addExecutable(.{ .name = "zig-patch", .root_source_file = .{ .path = "src/main.zig" }, .target = target, .optimize = mode });
 
-    const zstd = b.dependency("zstd", .{}).artifact("zstd");
+    const zstd = b.dependency("zstd", .{
+        .target = target,
+        .optimize = mode,
+    }).artifact("zstd");
 
     b.installArtifact(exe);
 

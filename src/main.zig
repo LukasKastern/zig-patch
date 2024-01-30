@@ -144,7 +144,7 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         fn clearPreviousLines(self: *Self) void {
             const stdout = std.io.getStdErr().writer();
 
-            if (false) {
+            if (builtin.os.tag != .windows) {
                 stdout.print("\x1b[{d}D", .{self.columns_written}) catch unreachable;
                 stdout.print("\x1b[0K", .{}) catch unreachable;
             } else {
