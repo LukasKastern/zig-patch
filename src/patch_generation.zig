@@ -16,6 +16,36 @@ const PatchIO = @import("io/patch_io.zig");
 pub const DefaultMaxWorkUnitSize = BlockSize * 128;
 pub const ChunkFileEveryWorkUnits = 5;
 
+//TODO: This should be MaxWorkUnitSize / MaxDataOpLen or something like that
+const MaxOperationOverhead = 1024;
+const MaxOperationOutputSize = DefaultMaxWorkUnitSize + MaxOperationOverhead;
+const WriteBufferSize = MaxOperationOutputSize * 10;
+
+const WriteBuffer = struct {
+    buffer: [WriteBufferSize]u8,
+    written_bytes: usize,
+
+    start_sequence: usize,
+
+    sequence_offsets: std.ArrayList(usize),
+
+    file_idx: usize,
+
+    is_io_pending: bool,
+    is_task_done: bool,
+    has_pending_write: *bool,
+
+    write_start_time: i128,
+
+    const InvalidRangeOperation = ~@as(usize, 0);
+};
+
+const ReadBuffer = struct {
+    data: [DefaultMaxWorkUnitSize]u8,
+    is_ready: bool,
+    read_start_time: i128,
+};
+
 const CreatePatchOptions = struct {
     max_work_unit_size: usize = DefaultMaxWorkUnitSize,
     staging_dir: std.fs.Dir,
@@ -23,53 +53,180 @@ const CreatePatchOptions = struct {
     compression: CompressionImplementation,
 };
 
+const PerThreadWorkingBufferSize = DefaultMaxWorkUnitSize * 2;
+
+const PatchGenerationTaskState = struct {
+    read_buffers: []ReadBuffer,
+    per_thread_working_buffers: [][PerThreadWorkingBufferSize]u8,
+    signature: *const SignatureFile,
+    block_map: *AnchoredBlocksMap,
+};
+
+const ActivePatchGenerationOperation = struct {
+    target_file: usize,
+    sequence: usize,
+    next_sequence: usize,
+    start_sequence: usize,
+    num_bytes_to_process: usize = 0,
+
+    current_read_buffer: ?usize,
+    next_read_buffer: ?usize,
+
+    first_sequence_patch_file_idx: usize,
+
+    write_buffer: ?*WriteBuffer,
+
+    has_active_task: std.atomic.Atomic(u32),
+
+    task: ThreadPool.Task,
+
+    state: *PatchGenerationTaskState,
+
+    generate_operations_state: BlockPatching.GenerateOperationsState,
+
+    start_time: i128,
+
+    compression: CompressionImplementation,
+
+    error_message: ?[]const u8,
+
+    stats: struct {
+        total_blocks: usize = 0,
+        changed_blocks: usize = 0,
+        num_new_bytes: usize = 0,
+        num_bytes_read: usize = 0,
+    },
+
+    const Self = @This();
+
+    pub fn generatePatchTask(task: *ThreadPool.Task) void {
+        var self = @fieldParentPtr(Self, "task", task);
+        defer self.has_active_task.store(0, .Release);
+
+        self.generatePatchTaskImpl() catch |e| {
+            switch (e) {
+                else => {
+                    self.error_message = @errorName(e);
+                },
+            }
+        };
+    }
+
+    pub fn generatePatchTaskImpl(self: *Self) !void {
+        var data_buffer = &self.state.read_buffers[self.current_read_buffer.?];
+        self.generate_operations_state.in_buffer = data_buffer.data[0..self.num_bytes_to_process];
+
+        var temp_buffer = &self.state.per_thread_working_buffers[ThreadPool.Thread.current.?.idx];
+        var temp_allocator = std.heap.FixedBufferAllocator.init(temp_buffer);
+
+        var operations = try BlockPatching.generateOperationsForBuffer(
+            self.state.block_map.*,
+            &self.generate_operations_state,
+            temp_allocator.allocator(),
+            MaxDataOperationLength,
+        );
+
+        var operations_buffer = try temp_allocator.allocator().alloc(u8, DefaultMaxWorkUnitSize + BlockSize + 2048);
+        var fixed_buffer_stream = std.io.fixedBufferStream(operations_buffer);
+
+        // Update Stats
+        {
+            for (operations.items) |operation| {
+                switch (operation) {
+                    .Data => |data| {
+                        var blocks_in_data_op = @ceil(@as(f64, @floatFromInt(data.len)) / @as(f64, @floatFromInt(BlockSize)));
+                        // std.log.info("Data found in {} and part {}, blocks: {}", .{ self.file_info.file_idx, self.file_info.file_part_idx, blocks_in_data_op });
+                        self.stats.changed_blocks += @as(usize, @intFromFloat(blocks_in_data_op));
+                        self.stats.total_blocks += @as(usize, @intFromFloat(blocks_in_data_op));
+                        self.stats.num_new_bytes += data.len;
+                    },
+                    .BlockRange => {
+                        self.stats.total_blocks += operation.BlockRange.block_span;
+                    },
+                    .Invalid => {
+                        return error.InvalidOperationFound;
+                    },
+                }
+            }
+        }
+
+        // std.debug.assert(self.stats.num_new_bytes <= self.num_bytes_to_process + prev_step_bytes);
+
+        // Write operations to the temp buffer.
+        {
+            var fixed_buffer_writer = fixed_buffer_stream.writer();
+
+            // Serialize all operations into our fixed_memory_buffer.
+            // We do not write them to the file directly since we first want to have the data go through our compression.
+            try BlockPatching.saveOperations(operations, fixed_buffer_writer);
+        }
+
+        // Compress the operations_buffer into the write_buffer
+        {
+            //TODO: Can we use a fallback allocator?
+            var deflating_allocator = std.heap.c_allocator;
+
+            var deflating = try Compression.Deflating.init(self.compression, deflating_allocator);
+            defer deflating.deinit();
+
+            var prev_offset = self.write_buffer.?.written_bytes;
+            var deflated_data = try deflating.deflateBuffer(
+                fixed_buffer_stream.buffer[0..fixed_buffer_stream.pos],
+                self.write_buffer.?.buffer[prev_offset + @sizeOf(usize) ..],
+            );
+
+            // Write the total compressed size which we need to inflate the data when applying the patch.
+            {
+                var write_buffer_stream = std.io.fixedBufferStream(self.write_buffer.?.buffer[prev_offset .. prev_offset + @sizeOf(usize)]);
+                write_buffer_stream.writer().writeIntBig(usize, deflated_data.len) catch unreachable;
+            }
+
+            self.write_buffer.?.sequence_offsets.appendAssumeCapacity(prev_offset);
+
+            self.write_buffer.?.written_bytes = prev_offset + deflated_data.len + @sizeOf(usize);
+        }
+
+        var first_range_operation_block = WriteBuffer.InvalidRangeOperation;
+        var last_range_operation_block = WriteBuffer.InvalidRangeOperation;
+
+        for (operations.items) |operation| {
+            switch (operation) {
+                .BlockRange => |range_op| {
+                    if (first_range_operation_block == WriteBuffer.InvalidRangeOperation) {
+                        first_range_operation_block = range_op.block_index;
+                    }
+
+                    last_range_operation_block = range_op.block_index + range_op.block_span;
+
+                    self.stats.total_blocks += operation.BlockRange.block_index;
+                },
+                else => {},
+            }
+        }
+    }
+};
+
 pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature: *SignatureFile, old_signature: *SignatureFile, allocator: std.mem.Allocator, options: CreatePatchOptions, stats: ?*CreatePatchStats, progress_callback: ?ProgressCallback) !void {
     var anchored_block_map = try AnchoredBlocksMap.init(old_signature, allocator);
     defer anchored_block_map.deinit();
 
-    //TODO: This should be MaxWorkUnitSize / MaxDataOpLen or something like that
-    const MaxOperationOverhead = 1024;
-    const MaxOperationOutputSize = DefaultMaxWorkUnitSize + MaxOperationOverhead;
-    const WriteBufferSize = MaxOperationOutputSize * 10;
-
-    const WriteBuffer = struct {
-        buffer: [WriteBufferSize]u8,
-        written_bytes: usize,
-
-        start_sequence: usize,
-
-        sequence_offsets: std.ArrayList(usize),
-
-        file_idx: usize,
-
-        is_io_pending: bool,
-        is_task_done: bool,
-        has_pending_write: *bool,
-
-        write_start_time: i128,
-
-        const InvalidRangeOperation = ~@as(usize, 0);
-    };
-
-    const ReadBuffer = struct {
-        data: [DefaultMaxWorkUnitSize]u8,
-        is_ready: bool,
-        read_start_time: i128,
-    };
-
     const num_read_buffers = thread_pool.num_threads * 2;
 
-    const PerThreadWorkingBufferSize = DefaultMaxWorkUnitSize * 2;
+    var patch_header = try PatchHeader.init(new_signature, old_signature, options.compression, allocator);
+    defer patch_header.deinit();
 
-    const PatchGenerationTaskState = struct {
-        read_buffers: []ReadBuffer,
-        per_thread_working_buffers: [][PerThreadWorkingBufferSize]u8,
-        signature: *const SignatureFile,
-        block_map: *AnchoredBlocksMap,
-    };
+    const patch_handle = try patch_io.createFile(options.staging_dir.fd, "Patch.pwd");
+
+    const patch = std.fs.File{ .handle = patch_handle };
+    defer patch.close();
 
     var task_state = try allocator.create(PatchGenerationTaskState);
     defer allocator.destroy(task_state);
+
+    task_state.signature = new_signature;
+    task_state.block_map = anchored_block_map;
+    task_state.per_thread_working_buffers = try allocator.alloc([PerThreadWorkingBufferSize]u8, thread_pool.max_threads * 2);
+    defer allocator.free(task_state.per_thread_working_buffers);
 
     task_state.read_buffers = try allocator.alloc(ReadBuffer, num_read_buffers);
     defer allocator.free(task_state.read_buffers);
@@ -81,163 +238,23 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         available_read_buffers.appendAssumeCapacity(idx);
     }
 
-    const ActivePatchGenerationOperation = struct {
-        target_file: usize,
-        sequence: usize,
-        next_sequence: usize,
-        start_sequence: usize,
-        num_bytes_to_process: usize = 0,
-
-        current_read_buffer: ?usize,
-        next_read_buffer: ?usize,
-
-        first_sequence_patch_file_idx: usize,
-
-        write_buffer: ?*WriteBuffer,
-
-        has_active_task: std.atomic.Atomic(u32),
-
-        task: ThreadPool.Task,
-
-        state: *PatchGenerationTaskState,
-
-        generate_operations_state: BlockPatching.GenerateOperationsState,
-
-        start_time: i128,
-
-        compression: CompressionImplementation,
-
-        stats: struct {
-            total_blocks: usize = 0,
-            changed_blocks: usize = 0,
-            num_new_bytes: usize = 0,
-            num_bytes_read: usize = 0,
-        },
-
-        const Self = @This();
-
-        pub fn generatePatchTask(task: *ThreadPool.Task) void {
-            var self = @fieldParentPtr(Self, "task", task);
-
-            var data_buffer = &self.state.read_buffers[self.current_read_buffer.?];
-            self.generate_operations_state.in_buffer = data_buffer.data[0..self.num_bytes_to_process];
-
-            var temp_buffer = &self.state.per_thread_working_buffers[ThreadPool.Thread.current.?.idx];
-            var temp_allocator = std.heap.FixedBufferAllocator.init(temp_buffer);
-
-            var operations = BlockPatching.generateOperationsForBuffer(
-                self.state.block_map.*,
-                &self.generate_operations_state,
-                temp_allocator.allocator(),
-                MaxDataOperationLength,
-            ) catch |e| {
-                switch (e) {
-                    else => {
-                        std.log.err("Generate operations failed. Error: {s}", .{@errorName(e)});
-                        unreachable;
-                    },
-                }
-            };
-
-            var operations_buffer = temp_allocator.allocator().alloc(u8, DefaultMaxWorkUnitSize + BlockSize + 2048) catch unreachable;
-            var fixed_buffer_stream = std.io.fixedBufferStream(operations_buffer);
-
-            // Update Stats
-            {
-                for (operations.items) |operation| {
-                    switch (operation) {
-                        .Data => |data| {
-                            var blocks_in_data_op = @ceil(@as(f64, @floatFromInt(data.len)) / @as(f64, @floatFromInt(BlockSize)));
-                            // std.log.info("Data found in {} and part {}, blocks: {}", .{ self.file_info.file_idx, self.file_info.file_part_idx, blocks_in_data_op });
-                            self.stats.changed_blocks += @as(usize, @intFromFloat(blocks_in_data_op));
-                            self.stats.total_blocks += @as(usize, @intFromFloat(blocks_in_data_op));
-                            self.stats.num_new_bytes += data.len;
-                        },
-                        .BlockRange => {
-                            self.stats.total_blocks += operation.BlockRange.block_span;
-                        },
-                        .Invalid => {
-                            unreachable;
-                        },
-                    }
-                }
-            }
-
-            // std.debug.assert(self.stats.num_new_bytes <= self.num_bytes_to_process + prev_step_bytes);
-
-            // Write operations to the temp buffer.
-            {
-                var fixed_buffer_writer = fixed_buffer_stream.writer();
-
-                // Serialize all operations into our fixed_memory_buffer.
-                // We do not write them to the file directly since we first want to have the data go through our compression.
-                BlockPatching.saveOperations(operations, fixed_buffer_writer) catch |e| {
-                    switch (e) {
-                        else => {
-                            std.log.err("Failed to save operations. Error: {s}", .{@errorName(e)});
-                            unreachable;
-                        },
-                    }
-                };
-            }
-
-            // Compress the operations_buffer into the write_buffer
-            {
-                //TODO: Can we use a fallback allocator?
-                var deflating_allocator = std.heap.c_allocator;
-
-                var deflating = Compression.Deflating.init(self.compression, deflating_allocator) catch unreachable;
-                defer deflating.deinit();
-
-                var prev_offset = self.write_buffer.?.written_bytes;
-                var deflated_data = deflating.deflateBuffer(
-                    fixed_buffer_stream.buffer[0..fixed_buffer_stream.pos],
-                    self.write_buffer.?.buffer[prev_offset + @sizeOf(usize) ..],
-                ) catch unreachable;
-
-                // Write the total compressed size which we need to inflate the data when applying the patch.
-                {
-                    var write_buffer_stream = std.io.fixedBufferStream(self.write_buffer.?.buffer[prev_offset .. prev_offset + @sizeOf(usize)]);
-                    write_buffer_stream.writer().writeIntBig(usize, deflated_data.len) catch unreachable;
-                }
-
-                self.write_buffer.?.sequence_offsets.appendAssumeCapacity(prev_offset);
-
-                self.write_buffer.?.written_bytes = prev_offset + deflated_data.len + @sizeOf(usize);
-            }
-
-            var first_range_operation_block = WriteBuffer.InvalidRangeOperation;
-            var last_range_operation_block = WriteBuffer.InvalidRangeOperation;
-
-            for (operations.items) |operation| {
-                switch (operation) {
-                    .BlockRange => |range_op| {
-                        if (first_range_operation_block == WriteBuffer.InvalidRangeOperation) {
-                            first_range_operation_block = range_op.block_index;
-                        }
-
-                        last_range_operation_block = range_op.block_index + range_op.block_span;
-
-                        self.stats.total_blocks += operation.BlockRange.block_index;
-                    },
-                    else => {},
-                }
-            }
-
-            self.has_active_task.store(0, .Release);
-        }
-    };
-
     const max_simulatenous_patch_generation_operations = thread_pool.max_threads * 2;
+    var has_pending_write = false;
 
-    var operation_slots = try allocator.alloc(ActivePatchGenerationOperation, max_simulatenous_patch_generation_operations);
-    defer allocator.free(operation_slots);
+    const max_num_write_buffers = thread_pool.max_threads * 2;
+    var write_buffers = try std.ArrayList(*WriteBuffer).initCapacity(allocator, max_num_write_buffers);
+    defer {
+        while (has_pending_write) {
+            patch_io.tick();
+            std.time.sleep(std.time.ns_per_ms * 100);
+        }
 
-    var available_operation_slots = try std.ArrayList(usize).initCapacity(allocator, max_simulatenous_patch_generation_operations);
-    defer available_operation_slots.deinit();
+        for (write_buffers.items) |buffer| {
+            buffer.sequence_offsets.deinit();
+            allocator.destroy(buffer);
+        }
 
-    for (0..max_simulatenous_patch_generation_operations) |idx| {
-        available_operation_slots.appendAssumeCapacity(idx);
+        write_buffers.deinit();
     }
 
     const ProgressOperationData = ProgressCallback.CallbackData.CreatePatchData.OperationData;
@@ -247,25 +264,38 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
     );
     defer progress_operation_data_array.deinit();
 
-    var active_patch_generation_operations = try std.ArrayList(usize).initCapacity(allocator, max_simulatenous_patch_generation_operations);
-    defer active_patch_generation_operations.deinit();
-
-    task_state.signature = new_signature;
-    task_state.block_map = anchored_block_map;
-    task_state.per_thread_working_buffers = try allocator.alloc([PerThreadWorkingBufferSize]u8, thread_pool.max_threads * 2);
-    defer allocator.free(task_state.per_thread_working_buffers);
-
-    const max_num_write_buffers = thread_pool.max_threads * 2;
-
-    var write_buffers = try std.ArrayList(*WriteBuffer).initCapacity(allocator, max_num_write_buffers);
+    var operation_slots = try allocator.alloc(ActivePatchGenerationOperation, max_simulatenous_patch_generation_operations);
     defer {
-        for (write_buffers.items) |buffer| {
-            buffer.sequence_offsets.deinit();
-            allocator.destroy(buffer);
+        var are_tasks_pending = true;
+        while (are_tasks_pending) {
+            are_tasks_pending = false;
+
+            for (operation_slots) |slot| {
+                are_tasks_pending = are_tasks_pending or slot.has_active_task.load(.Acquire) != 0;
+
+                if (slot.next_read_buffer) |next_read_buffer_idx| {
+                    if (!task_state.read_buffers[next_read_buffer_idx].is_ready) {
+                        are_tasks_pending = true;
+                    }
+                }
+            }
+
+            patch_io.tick();
+            std.time.sleep(std.time.ns_per_ms * 100);
         }
 
-        write_buffers.deinit();
+        allocator.free(operation_slots);
     }
+
+    var available_operation_slots = try std.ArrayList(usize).initCapacity(allocator, max_simulatenous_patch_generation_operations);
+    defer available_operation_slots.deinit();
+
+    for (0..max_simulatenous_patch_generation_operations) |idx| {
+        available_operation_slots.appendAssumeCapacity(idx);
+    }
+
+    var active_patch_generation_operations = try std.ArrayList(usize).initCapacity(allocator, max_simulatenous_patch_generation_operations);
+    defer active_patch_generation_operations.deinit();
 
     var next_file_idx: usize = 0;
     var patch_file_idx: usize = 0;
@@ -288,14 +318,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
     };
 
     var finished_operations: usize = 0;
-
-    var patch_header = try PatchHeader.init(new_signature, old_signature, options.compression, allocator);
-    defer patch_header.deinit();
-
-    const patch_handle = try patch_io.createFile(options.staging_dir.fd, "Patch.pwd");
-
-    const patch = std.fs.File{ .handle = patch_handle };
-    defer patch.close();
 
     var last_progress_reported_at = std.time.nanoTimestamp();
 
@@ -326,8 +348,6 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
         try patch_header.savePatchHeader(counting_writer.writer());
         break :blk counting_writer.bytes_written;
     };
-
-    var has_pending_write = false;
 
     var file_chunk_sequence: usize = 0;
 
@@ -371,6 +391,7 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
                     .stats = .{},
                     .start_time = std.time.nanoTimestamp(),
                     .compression = options.compression,
+                    .error_message = null,
                 };
 
                 const desired_num_bytes_to_process = ChunkFileEveryWorkUnits * DefaultMaxWorkUnitSize;
@@ -441,6 +462,14 @@ pub fn createPatchV2(patch_io: *PatchIO, thread_pool: *ThreadPool, new_signature
 
                 if (is_task_running) {
                     continue :schedule_operations;
+                }
+
+                if (active_operation.error_message) |error_message| {
+                    std.log.err(
+                        "Generating Patch for File {} and Sequence {} failed. Error: {s}",
+                        .{ active_operation.target_file, active_operation.sequence, error_message },
+                    );
+                    return error.GeneratingPatchFailed;
                 }
 
                 var next_start_offset = active_operation.next_sequence * DefaultMaxWorkUnitSize;
