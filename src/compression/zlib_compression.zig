@@ -115,7 +115,7 @@ pub const ZlibCompression = struct {
         compression_impl: compression.InflateImpl,
         allocator: std.mem.Allocator,
         zlib_allocator: ZlibAllocator,
-        // state: zlib.z_stream,
+        state: zlib.z_stream,
 
         pub fn init(allocator: std.mem.Allocator) !*ZlibInflate {
             var inflate = try allocator.create(ZlibInflate);
@@ -127,14 +127,14 @@ pub const ZlibCompression = struct {
 
             inflate.allocator = allocator;
 
-            // inflate.state = std.mem.zeroInit(zlib.z_stream, .{});
-            // inflate.state.zalloc = ZlibAllocator.allocZlib;
-            // inflate.state.zfree = ZlibAllocator.freeZlib;
-            // inflate.state.@"opaque" = &inflate.zlib_allocator;
+            inflate.state = std.mem.zeroInit(zlib.z_stream, .{});
+            inflate.state.zalloc = ZlibAllocator.allocZlib;
+            inflate.state.zfree = ZlibAllocator.freeZlib;
+            inflate.state.@"opaque" = &inflate.zlib_allocator;
 
-            // if (zlib.inflateInit(&inflate.state) != zlib.Z_OK) {
-            //     return error.ZLibInitializationFailed;
-            // }
+            if (zlib.inflateInit(&inflate.state) != zlib.Z_OK) {
+                return error.ZLibInitializationFailed;
+            }
 
             inflate.compression_impl = .{ .inflate_buffer = inflateStream };
 
@@ -142,28 +142,25 @@ pub const ZlibCompression = struct {
         }
 
         pub fn deinit(inflate: *ZlibInflate) void {
-            // var result = zlib.inflateEnd(&inflate.state);
-            // std.debug.assert(result == zlib.Z_OK);
+            var result = zlib.inflateEnd(&inflate.state);
+            std.debug.assert(result == zlib.Z_OK);
 
             inflate.allocator.destroy(inflate);
         }
 
         pub fn inflateStream(impl: *compression.InflateImpl, input: []u8, output: []u8) error{InflateError}!void {
             var inflate_impl = @fieldParentPtr(ZlibInflate, "compression_impl", impl);
-            _ = input;
-            _ = output;
-            _ = inflate_impl;
-            // inflate_impl.state.avail_in = @intCast(c_uint, input.len);
-            // inflate_impl.state.next_in = input.ptr;
-            // inflate_impl.state.avail_out = @intCast(c_uint, output.len);
-            // inflate_impl.state.next_out = output.ptr;
+            inflate_impl.state.avail_in = @as(c_uint, @intCast(input.len));
+            inflate_impl.state.next_in = input.ptr;
+            inflate_impl.state.avail_out = @as(c_uint, @intCast(output.len));
+            inflate_impl.state.next_out = output.ptr;
 
-            // var inflate_res = zlib.inflate(&inflate_impl.state, zlib.Z_FINISH);
+            var inflate_res = zlib.inflate(&inflate_impl.state, zlib.Z_FINISH);
 
-            // if (inflate_res != zlib.Z_STREAM_END) {
-            //     std.log.err("Zlib inflate resulted in err={}, msg={s}", .{ inflate_res, inflate_impl.state.msg });
-            //     return error.InflateError;
-            // }
+            if (inflate_res != zlib.Z_STREAM_END) {
+                std.log.err("Zlib inflate resulted in err={}, msg={s}", .{ inflate_res, inflate_impl.state.msg });
+                return error.InflateError;
+            }
         }
     };
 

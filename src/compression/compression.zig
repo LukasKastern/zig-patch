@@ -199,7 +199,12 @@ test {
 test "Deflated then Infalted buffer should be the same" {
     var prng = std.rand.DefaultPrng.init(897123);
     var rand = prng.random();
-    const implementations = [_]CompressionImplementation{.Zstd};
+    const implementations = [_]CompressionImplementation{
+        .None,
+        .Zstd,
+        .Brotli,
+        .Zlib,
+    };
 
     for (implementations) |implementation| {
         var input: [2048]u8 = undefined;
