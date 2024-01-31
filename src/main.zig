@@ -75,6 +75,7 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         \\-s, --signature_file <str>     Signature file to which the Patch will be created.
         \\-c, --compression <str>        Compression that will be used. Valid options are: None, Brotli, Zlib and Zstd (default)
         \\    --threads <u32>            Number of worker threads to use. Defaults to core_count - 1.                 
+        \\    --disable_ui               Disbales the progress UI
         \\
     );
 
@@ -117,6 +118,7 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         thread_pool.max_threads = num_threads;
     }
 
+    var disable_ui = parsed_args.args.disable_ui;
     thread_pool.spawnThreads();
 
     var folder = parsed_args.args.source_folder;
@@ -140,6 +142,7 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         state: CreatePatchState = .None,
         source_folder: []const u8,
         columns_written: usize = 0,
+        disable_ui: bool,
 
         fn clearPreviousLines(self: *Self) void {
             const stdout = std.io.getStdErr().writer();
@@ -277,7 +280,9 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
 
             switch (callback_data.*) {
                 .creating_patch => |creating_patch| {
-                    print_helper.drawCreatePatchProgress(&creating_patch);
+                    if (!print_helper.disable_ui) {
+                        print_helper.drawCreatePatchProgress(&creating_patch);
+                    }
                 },
                 .default => |default| {
                     if (default.type) |progress_str_value| {
@@ -308,7 +313,10 @@ fn create(args_it: anytype, thread_pool: *ThreadPool, allocator: std.mem.Allocat
         }
     };
 
-    var print_helper = CreatePatchPrintHelper{ .source_folder = parsed_args.args.source_folder.? };
+    var print_helper = CreatePatchPrintHelper{
+        .source_folder = parsed_args.args.source_folder.?,
+        .disable_ui = disable_ui,
+    };
 
     var stats: OperationStats = .{};
 
