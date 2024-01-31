@@ -52,7 +52,7 @@ zig-patch apply --patch "/PatchFile.pwd" --target_folder "/MyBuild"
 With a reference:
 ```
 zig-patch apply --patch "/PatchFile.pwd" --reference_folder "MyBuild" --target_folder "/MyBuildV2FromPatch"
-```
+````
 
 ### Extra
 
@@ -60,3 +60,14 @@ Some commands allow additional arguments. Like the worker count to use or compre
 
 Run ***zig-patch command --help*** for more info.
 
+#### Linux Notes
+
+generating patches for large folders might fail.
+
+Increase the limit of open file handles to suit the amount of files in the folders you are going to patch.
+
+For example:
+
+````
+ulimit -n 8096
+````

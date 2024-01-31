@@ -61,16 +61,38 @@ pub fn lockDirectory(implementation: PatchIO.Implementation, path: []const u8, a
     directories_to_iterate.append(root_directory) catch return PatchIO.PatchIOErrors.OutOfMemory;
 
     while (directories_to_iterate.items.len > 0) {
-        var dir = directories_to_iterate.orderedRemove(0);
+        var dir = directories_to_iterate.items[0];
         const rc = linux.getdents64(dir, &buf, buf.len);
         switch (linux.getErrno(rc)) {
             .SUCCESS => {},
-            else => return PatchIO.PatchIOErrors.Unexpected,
+            else => |err| return {
+                std.log.err(("GetDents64 failed with error: {}"), .{err});
+                return PatchIO.PatchIOErrors.Unexpected;
+            },
         }
 
         if (rc == 0) {
-            break;
+            _ = directories_to_iterate.orderedRemove(0);
+            continue;
         }
+
+        const PathHandle = struct {
+            offset: u32,
+            len: u32,
+        };
+
+        var parent_dir_path = blk: {
+            for (locked_dir.directories.items) |d| {
+                if (d.handle == dir) {
+                    break :blk PathHandle{
+                        .offset = d.path_offset,
+                        .len = d.path_len,
+                    };
+                }
+            }
+
+            break :blk PathHandle{ .offset = @as(u32, 0), .len = @as(u32, 0) };
+        };
 
         var idx: usize = 0;
         while (idx < rc) {
@@ -91,21 +113,39 @@ pub fn lockDirectory(implementation: PatchIO.Implementation, path: []const u8, a
             var handle_res = linux.openat(dir, name, 0, linux.O.RDONLY);
             var current_entry_handle = switch (linux.getErrno(handle_res)) {
                 .SUCCESS => @as(PlatformHandle, @intCast(handle_res)),
-                else => return PatchIO.PatchIOErrors.Unexpected,
+                else => |err| {
+                    std.log.err(("openAt failed with error: {}"), .{err});
+                    return PatchIO.PatchIOErrors.Unexpected;
+                },
             };
 
-            if (name.len + path_buffer_offset > path_buffer.len) {
+            if (parent_dir_path.len + 1 + name.len + path_buffer_offset > path_buffer.len) {
                 path_buffer = allocator.realloc(path_buffer, path_buffer.len * 2) catch return PatchIO.PatchIOErrors.OutOfMemory;
             }
 
+            var prev_path_buffer_offset = path_buffer_offset;
+
+            if (parent_dir_path.len > 0) {
+                std.mem.copy(
+                    u8,
+                    path_buffer[path_buffer_offset .. path_buffer_offset + parent_dir_path.len],
+                    path_buffer[parent_dir_path.offset .. parent_dir_path.offset + parent_dir_path.len],
+                );
+                path_buffer_offset += parent_dir_path.len;
+
+                path_buffer[path_buffer_offset] = '/';
+                path_buffer_offset += 1;
+            }
+
             std.mem.copy(u8, path_buffer[path_buffer_offset .. path_buffer_offset + name.len], name);
+            path_buffer_offset += name.len;
 
             switch (linux_entry.d_type) {
                 linux.DT.DIR => {
                     locked_dir.directories.append(.{
                         .handle = current_entry_handle,
-                        .path_offset = @intCast(path_buffer_offset),
-                        .path_len = @intCast(name.len),
+                        .path_offset = @intCast(prev_path_buffer_offset),
+                        .path_len = @intCast(path_buffer_offset - prev_path_buffer_offset),
                     }) catch return PatchIO.PatchIOErrors.OutOfMemory;
 
                     directories_to_iterate.append(current_entry_handle) catch return PatchIO.PatchIOErrors.OutOfMemory;
@@ -122,15 +162,13 @@ pub fn lockDirectory(implementation: PatchIO.Implementation, path: []const u8, a
 
                     locked_dir.files.append(.{
                         .handle = current_entry_handle,
-                        .path_offset = @intCast(path_buffer_offset),
-                        .path_len = @intCast(name.len),
+                        .path_offset = @intCast(prev_path_buffer_offset),
+                        .path_len = @intCast(path_buffer_offset - prev_path_buffer_offset),
                         .size = @intCast(stats.size),
                     }) catch return PatchIO.PatchIOErrors.OutOfMemory;
                 },
                 else => continue,
             }
-
-            path_buffer_offset += name.len;
         }
     }
 
