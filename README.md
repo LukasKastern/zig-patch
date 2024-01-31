@@ -62,9 +62,9 @@ Run ***zig-patch command --help*** for more info.
 
 #### Linux Notes
 
-generating patches for large folders might fail.
+Generating patches for large folders might fail.
 
-Increase the limit of open file handles to suit the amount of files in the folders you are going to patch.
+If so increase the limit of open file handles to suit the amount of files in the folders you are going to patch.
 
 For example:
 
